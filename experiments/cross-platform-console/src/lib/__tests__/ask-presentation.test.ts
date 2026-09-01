@@ -12,14 +12,14 @@ describe("buildAskPresentation", () => {
       "**Recommendation:** wait for the pending run before dispatching another promotion.",
       "",
       "**Question:** should I retry now or wait?",
+      "",
+      "The choice; use a dedicated token and resume in small batches.",
     ].join("\n");
 
     const presentation = buildAskPresentation(content);
 
-    expect(presentation.decision).toBe("**Question:** should I retry now or wait?");
-    expect(presentation.recommendation).toBe(
-      "**Recommendation:** wait for the pending run before dispatching another promotion.",
-    );
+    expect(presentation.decision).toBe("should I retry now or wait?");
+    expect(presentation.recommendation).toBe("use a dedicated token and resume in small batches.");
     expect(presentation.context).toHaveLength(2);
     expect(presentation.hasMore).toBe(true);
   });

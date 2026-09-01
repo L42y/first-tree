@@ -168,8 +168,8 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
       <View style={styles.content}>
         <View style={styles.header}>
           <View style={styles.headerText}>
-            <Text style={styles.kicker}>Decision needed</Text>
-            <Text style={styles.subtitle}>Answer below</Text>
+            <Text style={styles.kicker}>DECISION NEEDED</Text>
+            <Text style={styles.subtitle}>{options.length > 0 ? "Choose an option" : "Provide an answer"}</Text>
           </View>
           <Pressable onPress={() => router.back()} hitSlop={8}>
             <Text style={styles.headerAction}>Close</Text>
@@ -183,29 +183,14 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
           bounces={false}
         >
           <View style={styles.decisionCard}>
-            <MarkdownText value={presentation.decision} />
+            <Text style={styles.questionText}>{presentation.decision}</Text>
             {presentation.recommendation ? (
-              <View style={styles.recommendation}>
-                <Text style={styles.sectionLabel}>Recommended</Text>
-                <MarkdownText value={presentation.recommendation} />
-              </View>
+              <Text style={styles.recommendationText} numberOfLines={4}>
+                {presentation.recommendation}
+              </Text>
             ) : null}
           </View>
 
-          {presentation.hasMore && (
-            <Pressable
-              onPress={() => setShowContext((visible) => !visible)}
-              style={({ pressed }) => [styles.disclosure, pressed && styles.pressed]}
-            >
-              <Text style={styles.disclosureText}>{showContext ? "Hide background" : "Show background"}</Text>
-            </Pressable>
-          )}
-          {showContext && (
-            <View style={styles.context}>
-              <Text style={styles.sectionLabel}>Background</Text>
-              <MarkdownText value={typeof question?.content === "string" ? question.content : ""} />
-            </View>
-          )}
           {options.length > 0 && (
             <View style={styles.options}>
               {options.map((option, index) => {
@@ -233,6 +218,21 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
               })}
             </View>
           )}
+
+          {presentation.hasMore && (
+            <Pressable
+              onPress={() => setShowContext((visible) => !visible)}
+              style={({ pressed }) => [styles.disclosure, pressed && styles.pressed]}
+            >
+              <Text style={styles.disclosureText}>{showContext ? "Hide context" : "Show context"}</Text>
+            </Pressable>
+          )}
+          {showContext && (
+            <View style={styles.context}>
+              <Text style={styles.sectionLabel}>Full request</Text>
+              <MarkdownText value={typeof question?.content === "string" ? question.content : ""} />
+            </View>
+          )}
           {thread.length > 0 && (
             <View style={styles.thread}>
               <Pressable
@@ -240,7 +240,7 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
                 style={({ pressed }) => [styles.disclosure, pressed && styles.pressed]}
               >
                 <Text style={styles.disclosureText}>
-                  {showThread ? "Hide conversation" : `Show conversation (${thread.length})`}
+                  {showThread ? "Hide clarification" : `Clarification (${thread.length})`}
                 </Text>
               </Pressable>
               {showThread &&
@@ -262,7 +262,13 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
           style={styles.inputContainer}
           value={answer}
           onChangeText={setAnswer}
-          placeholder={mode === "clarify" ? "Ask the agent for clarification…" : "Type your answer…"}
+          placeholder={
+            mode === "clarify"
+              ? "Ask the agent for clarification…"
+              : options.length > 0
+                ? "Add details (optional)"
+                : "Type your answer…"
+          }
           placeholderTextColor={colors.textMuted}
           multiline
           maxLength={4000}
@@ -277,7 +283,7 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
             disabled={submitting || advancing}
             style={({ pressed }) => [styles.modeButton, pressed && styles.pressed]}
           >
-            <Text style={styles.modeText}>{mode === "clarify" ? "Answer instead" : "Need details?"}</Text>
+            <Text style={styles.modeText}>{mode === "clarify" ? "Answer instead" : "Ask agent"}</Text>
           </Pressable>
           {mode === "submit" && (
             <Pressable
@@ -357,21 +363,28 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
+    gap: 10,
     paddingBottom: 4,
   },
   decisionCard: {
-    gap: 10,
-    borderRadius: 16,
+    gap: 8,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: colors.accent,
     backgroundColor: colors.surfaceStrong,
-    padding: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
   },
-  recommendation: {
-    gap: 4,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
-    paddingTop: 10,
+  questionText: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: "700",
+    lineHeight: 24,
+  },
+  recommendationText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 19,
   },
   sectionLabel: {
     color: colors.textMuted,
@@ -404,22 +417,27 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   option: {
-    borderRadius: 12,
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.bg,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 3,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
   },
   optionSelected: {
     borderColor: colors.accent,
     backgroundColor: "rgba(59,130,246,0.18)",
   },
   optionLabel: {
+    flex: 1,
     color: colors.text,
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: "700",
+    lineHeight: 20,
   },
   optionDescription: {
     color: colors.textMuted,
