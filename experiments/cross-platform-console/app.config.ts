@@ -23,7 +23,9 @@ const config = {
     bundleIdentifier: "ai.firsttree.console",
     requireFullScreen: true,
     infoPlist: {
-      UIViewControllerBasedStatusBarAppearance: true,
+      // React Native's RCTStatusBarManager expects the legacy app-owned
+      // status-bar mode; UIViewController-based overrides trigger its warning.
+      UIViewControllerBasedStatusBarAppearance: false,
       // Standard HTTPS/OS crypto only — export-exempt (answered via EAS prompt).
       ITSAppUsesNonExemptEncryption: false,
     },
