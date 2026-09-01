@@ -1,41 +1,26 @@
-import { useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
-
 import type { Message } from "@first-tree/shared";
+import { StyleSheet, Text, View } from "react-native";
 import { MarkdownText } from "~/components/markdown-text";
+import { findResolutionMessage, parseAskRequest } from "~/lib/ask";
 import { colors } from "~/lib/theme";
-import { findResolutionMessage, parseAskRequest, resolveAskRequest } from "~/lib/ask";
 
 /**
- * Interactive card for `format="request"` messages ("ask user").
+ * Read-only timeline card for `format="request"` messages ("ask user").
  *
- * Mirrors the web answer surface: option buttons or free text attach
- * `resolves kind="answered"`, Skip attaches `resolves kind="closed"`.
- * Only the targeted human can act — everyone else sees the read-only
- * state (open questions show a "waiting for <target>" note).
+ * Answering lives in the root native modal. Only the targeted human sees the
+ * open-question affordance; everyone else sees the read-only state.
  */
 export function RequestCard({
-  chatId,
   message,
   messages,
   selfAgentId,
 }: {
-  chatId: string;
   message: Message;
   messages: Message[];
   selfAgentId: string | null;
 }) {
   const parsed = parseAskRequest(message);
   const resolution = findResolutionMessage(messages, message.id) ?? null;
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   if (!parsed) {
     // Malformed request payload — render the body as a plain card.
@@ -48,33 +33,14 @@ export function RequestCard({
 
   const isTarget = selfAgentId !== null && parsed.targetAgentId === selfAgentId;
 
-  const submit = async (kind: "answered" | "closed", content: string) => {
-    setError(null);
-    setSubmitting(true);
-    try {
-      await resolveAskRequest(chatId, message, kind, content);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to send");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   return (
     <View style={styles.wrap}>
       <View style={[styles.card, resolution ? styles.resolvedCard : styles.openCard]}>
         <Text style={styles.kicker}>{resolution ? "Question · answered" : isTarget ? "Asked you" : "Question"}</Text>
         <MarkdownText value={typeof message.content === "string" ? message.content : ""} />
-
-
-        {!resolution && error && <Text style={styles.error}>{error}</Text>}
-
         {isTarget && !resolution ? (
-          <Text style={styles.waitingNote}>Open question — answer with the dock above or the composer below.</Text>
+          <Text style={styles.waitingNote}>Open question — answer in the modal above.</Text>
         ) : null}
-
-        {!isTarget && !resolution ? null : null}
-
 
         {resolution ? (
           <Text style={styles.resolutionNote}>
@@ -126,86 +92,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     textTransform: "uppercase",
     color: colors.textMuted,
-  },
-  options: {
-    gap: 8,
-  },
-  option: {
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    gap: 2,
-  },
-  optionSelected: {
-    borderColor: colors.accent,
-    backgroundColor: "rgba(59,130,246,0.18)",
-  },
-  optionLabel: {
-    color: colors.text,
-    fontWeight: "600",
-  },
-  optionLabelSelected: {
-    color: colors.text,
-  },
-  optionDescription: {
-    color: colors.textMuted,
-    fontSize: 12,
-  },
-  actions: {
-    gap: 8,
-  },
-  row: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  flex1: {
-    flex: 1,
-  },
-  input: {
-    minHeight: 38,
-    maxHeight: 100,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.bg,
-    color: colors.text,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 14,
-  },
-  button: {
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-  },
-  primaryButton: {
-    backgroundColor: colors.accent,
-  },
-  primaryButtonText: {
-    color: colors.accentText,
-    fontWeight: "700",
-  },
-  secondaryButton: {
-    backgroundColor: colors.surface,
-  },
-  secondaryButtonText: {
-    color: colors.textSecondary,
-    fontWeight: "600",
-  },
-  pressed: {
-    opacity: 0.75,
-  },
-  disabled: {
-    opacity: 0.45,
-  },
-  error: {
-    color: colors.danger,
-    fontSize: 13,
   },
   resolutionNote: {
     color: colors.textMuted,

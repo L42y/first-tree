@@ -1,14 +1,14 @@
-import { useEffect } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { useFonts } from "expo-font";
 import { Stack, usePathname } from "expo-router";
-import * as SystemUI from "expo-system-ui";
 import { StatusBar } from "expo-status-bar";
+import * as SystemUI from "expo-system-ui";
+import { useEffect } from "react";
 import { TamaguiProvider, Theme } from "tamagui";
-
+import { TeamSwitchOverlay } from "~/components/team-switcher";
 import { AuthProvider } from "~/lib/auth-context";
 import { queryClient } from "~/lib/query-client";
-import { TeamSwitchOverlay } from "~/components/team-switcher";
+import { colors } from "~/lib/theme";
 import { config } from "~/tamagui.config";
 
 export default function RootLayout() {
@@ -23,12 +23,10 @@ export default function RootLayout() {
   });
 
   useEffect(() => {
-    SystemUI.setBackgroundColorAsync(
-      themeName === "dark" ? "#07151F" : "#E6F4FE",
-    ).catch(() => {
+    SystemUI.setBackgroundColorAsync(themeName === "dark" ? "#07151F" : "#E6F4FE").catch(() => {
       // Ignore environments where the system UI API is unavailable.
     });
-  }, [themeName]);
+  }, []);
 
   useEffect(() => {
     // TODO: wire up PostHog screen tracking here once analytics is integrated.
@@ -44,6 +42,20 @@ export default function RootLayout() {
             <Stack screenOptions={{ headerShown: false }}>
               <Stack.Screen name="login" />
               <Stack.Screen name="(app)" />
+              <Stack.Screen
+                name="chat/[chatId]/ask/[requestId]"
+                options={{
+                  presentation: "formSheet",
+                  headerShown: false,
+                  contentStyle: { backgroundColor: colors.bg },
+                  gestureEnabled: true,
+                  sheetAllowedDetents: [0.5, 1],
+                  sheetInitialDetentIndex: 0,
+                  sheetGrabberVisible: true,
+                  sheetCornerRadius: 24,
+                  sheetLargestUndimmedDetentIndex: "none",
+                }}
+              />
             </Stack>
             <TeamSwitchOverlay />
             <StatusBar style={themeName === "dark" ? "light" : "dark"} />

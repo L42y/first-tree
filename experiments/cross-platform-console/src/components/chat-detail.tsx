@@ -1,46 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  FlatList,
-  Keyboard,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
-import { useRouter } from "expo-router";
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-
-import { extractMentions } from "@first-tree/shared";
 import type { ChatDetail, Message } from "@first-tree/shared";
-
-import Constants from "expo-constants";
-import { EnrichedMarkdownTextInput } from "react-native-enriched-markdown";
-
-import { getChat, listChatMessages, markMeChatRead, sendChatMessage } from "~/lib/chats-api";
-import { useAuth } from "~/lib/auth-context";
-import { ChatMessageBubble } from "~/components/chat-message-bubble";
-import { RequestCard } from "~/components/request-card";
-import { RequestDock } from "~/components/request-dock";
-import {
-  askAgentForClarification,
-  fetchOpenRequests,
-  fetchRequestThread,
-  parseAskRequest,
-  resolveAskRequest,
-} from "~/lib/ask";
-import { MessageCard } from "~/components/message-card";
-import { MarkdownText } from "~/components/markdown-text";
+import { extractMentions } from "@first-tree/shared";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { usePathname, useRouter } from "expo-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, FlatList, Keyboard, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { Avatar } from "~/components/avatar";
+import { ChatMessageBubble } from "~/components/chat-message-bubble";
+import { LiveMarkdownInput } from "~/components/live-markdown-input";
+import { MessageCard } from "~/components/message-card";
+import { ASK_MODAL_ROUTE, fetchOpenRequests, parseAskRequest } from "~/lib/ask";
+import { useAuth } from "~/lib/auth-context";
+import { getChat, listChatMessages, markMeChatRead, sendChatMessage } from "~/lib/chats-api";
 import { colors } from "~/lib/theme";
-import type { PaginatedMessages } from "~/lib/chats-api";
 
 const PAGE_SIZE = 50;
-// Expo Go cannot host the enriched input's native views — fall back to a
-// plain TextInput there; dev client / standalone get live markdown.
-const IS_EXPO_GO = Constants.appOwnership === "expo";
 
 export function ChatDetailContent({
   chatId,
@@ -51,12 +24,13 @@ export function ChatDetailContent({
   showBack?: boolean;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { user, memberId, agentId: selfAgentId } = useAuth();
   const queryClient = useQueryClient();
   const listRef = useRef<FlatList<Message>>(null);
+  const askModalRequestRef = useRef<string | null>(null);
   // Set when messages first arrive (or after sending) so the next
-  // onContentSizeChange scrolls to the latest message exactly once,
-  // instead of fighting the user's scroll position forever.
+  // onContentSizeChange scrolls to the latest message exactly once.
   const pendingScrollRef = useRef(false);
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
@@ -65,14 +39,9 @@ export function ChatDetailContent({
   // automaticallyAdjustKeyboardInsets) mis-measured or left the composer
   // behind the keyboard on iOS.
   const [keyboardHeight, setKeyboardHeight] = useState(0);
-  const [askCollapsed, setAskCollapsed] = useState(false);
-  const [askMode, setAskMode] = useState<"submit" | "clarify">("submit");
-  const [askSelected, setAskSelected] = useState<number[]>([]);
   useEffect(() => {
     if (Platform.OS !== "ios") return;
-    const showSub = Keyboard.addListener("keyboardDidShow", (e) =>
-      setKeyboardHeight(e.endCoordinates.height),
-    );
+    const showSub = Keyboard.addListener("keyboardDidShow", (e) => setKeyboardHeight(e.endCoordinates.height));
     const hideSub = Keyboard.addListener("keyboardDidHide", () => setKeyboardHeight(0));
     return () => {
       showSub.remove();
@@ -89,8 +58,7 @@ export function ChatDetailContent({
   // "Load older" fetches previous pages via the cursor.
   const messagesQuery = useInfiniteQuery({
     queryKey: ["chats", chatId, "messages"],
-    queryFn: ({ pageParam, signal }) =>
-      listChatMessages(chatId, { limit: PAGE_SIZE, cursor: pageParam }, signal),
+    queryFn: ({ pageParam, signal }) => listChatMessages(chatId, { limit: PAGE_SIZE, cursor: pageParam }, signal),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
@@ -104,10 +72,7 @@ export function ChatDetailContent({
     pendingScrollRef.current = true;
   }, [chatId, queryClient]);
 
-  const messageCount = (messagesQuery.data?.pages ?? []).reduce(
-    (total, page) => total + page.items.length,
-    0,
-  );
+  const messageCount = (messagesQuery.data?.pages ?? []).reduce((total, page) => total + page.items.length, 0);
   useEffect(() => {
     if (messageCount > 0) pendingScrollRef.current = true;
   }, [messageCount]);
@@ -117,6 +82,7 @@ export function ChatDetailContent({
   // therefore lands partway inside the newest message when that message is
   // long. Follow the bottom until the reader takes over by dragging.
   const userScrolledRef = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: chatId changes when the route switches chats.
   useEffect(() => {
     userScrolledRef.current = false;
   }, [chatId]);
@@ -180,12 +146,12 @@ export function ChatDetailContent({
       const unresolved = requestIds.filter((id) => !resolvedIds.has(id));
       console.log(
         "[ask]",
-        "status=" + (openRequestsQuery.isSuccess ? "ok" : openRequestsQuery.isError ? "err" : "loading"),
-        "serverOpen=" + serverOpen.length,
-        "msgs=" + messages.length,
-        "requests=" + requestIds.length,
-        "unresolved=" + unresolved.length,
-        "firstUnresolved=" + (unresolved[0]?.slice(0, 8) ?? "none"),
+        `status=${openRequestsQuery.isSuccess ? "ok" : openRequestsQuery.isError ? "err" : "loading"}`,
+        `serverOpen=${serverOpen.length}`,
+        `msgs=${messages.length}`,
+        `requests=${requestIds.length}`,
+        `unresolved=${unresolved.length}`,
+        `firstUnresolved=${unresolved[0]?.slice(0, 8) ?? "none"}`,
       );
     }
     // Single source. /open-requests is scoped server-side to this viewer and
@@ -199,24 +165,38 @@ export function ChatDetailContent({
     return parsed ? { message: first, parsed } : null;
   }, [openRequestsQuery.data, openRequestsQuery.isSuccess, openRequestsQuery.isError, messages]);
 
-  // The ask's own thread, addressed by id: clarifications and the agent's
-  // answers stay attached to the question even once they leave the latest page.
-  const askThreadQuery = useQuery({
-    queryKey: ["chats", chatId, "request-thread", openAsk?.message.id],
-    queryFn: ({ signal }) => fetchRequestThread(chatId, openAsk?.message.id ?? "", signal),
-    enabled: openAsk !== null,
-    refetchInterval: 30_000,
-  });
+  const openAskId = openAsk?.message.id ?? null;
+  const askModalVisible = pathname.includes("/ask/");
 
-  // Everything under the question, oldest first — the request itself is
-  // rendered by the dock, not repeated inside it.
-  const askThread = useMemo(
-    () => (askThreadQuery.data ?? []).filter((m: Message) => m.id !== openAsk?.message.id),
-    [askThreadQuery.data, openAsk],
+  const openAskModal = useCallback(
+    (requestId: string) => {
+      askModalRequestRef.current = requestId;
+      void router.push({
+        pathname: ASK_MODAL_ROUTE,
+        params: { chatId, requestId },
+      } as never);
+    },
+    [chatId, router],
   );
 
+  useEffect(() => {
+    if (!openAskId) {
+      // A modal can briefly see an empty cache while advancing to the next
+      // request. Keep the session ref until the modal has actually dismissed.
+      if (!askModalVisible) askModalRequestRef.current = null;
+      return;
+    }
+    if (askModalVisible) {
+      // The modal owns queue transitions; keep the background screen from
+      // pushing a duplicate when the shared open-request query changes.
+      askModalRequestRef.current = openAskId;
+      return;
+    }
+    if (askModalRequestRef.current !== openAskId) openAskModal(openAskId);
+  }, [askModalVisible, openAskId, openAskModal]);
+
   const handleSend = useCallback(async () => {
-    if (!message.trim() || !memberId) return;
+    if (!message.trim() || !memberId || openAsk) return;
     const text = message.trim();
     setMessage("");
     setSending(true);
@@ -225,37 +205,6 @@ export function ChatDetailContent({
     userScrolledRef.current = false;
 
     try {
-      if (openAsk && askMode === "submit") {
-        // While an open ask is pending, Send SUBMITS the answer (the reply
-        // carries metadata.resolves per the server contract). Selected
-        // option labels ride ahead of any typed note.
-        const labels = askSelected
-          .map((i) => openAsk.parsed.request.options?.[i]?.label)
-          .filter(Boolean)
-          .join(", ");
-        const composed = [labels, text].filter(Boolean).join(" — ");
-        await resolveAskRequest(chatId, openAsk.message, "answered", composed);
-        await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
-        await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "open-requests"] });
-        setAskSelected([]);
-        listRef.current?.scrollToEnd({ animated: true });
-        return;
-      }
-      if (openAsk && askMode === "clarify") {
-        // "Ask agent" goes through the dedicated route rather than a plain
-        // mention: that is what threads the clarification under the request and
-        // stamps the trusted marker the server requires to include it in the
-        // request thread. A mention message is not attached to the question, so
-        // it would never appear alongside it. The ask stays open either way.
-        await askAgentForClarification(chatId, openAsk.message.id, text);
-        await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
-        await queryClient.invalidateQueries({
-          queryKey: ["chats", chatId, "request-thread", openAsk.message.id],
-        });
-        listRef.current?.scrollToEnd({ animated: true });
-        return;
-      }
-
       const mentions = extractMentions(
         text,
         chatQuery.data?.participants.map((p) => ({ agentId: p.agentId, name: p.displayName })) ?? [],
@@ -274,21 +223,7 @@ export function ChatDetailContent({
     } finally {
       setSending(false);
     }
-  }, [message, memberId, chatId, chatQuery.data, queryClient, openAsk, askMode, askSelected]);
-
-  const submitAnswer = useCallback(
-    async (question: Message, answer: string) => {
-      try {
-        await resolveAskRequest(chatId, question, answer ? "answered" : "closed", answer);
-        await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
-      } catch {
-        // Resolution failures surface via the next poll refetch.
-      }
-    },
-    [chatId, queryClient],
-  );
-
-
+  }, [message, memberId, chatId, chatQuery.data, queryClient, openAsk]);
   const isLoading = chatQuery.isLoading || messagesQuery.isLoading;
   const error = chatQuery.error ?? messagesQuery.error;
 
@@ -328,9 +263,7 @@ export function ChatDetailContent({
 
       {error && !isLoading && (
         <View style={styles.errorBox}>
-          <Text style={styles.errorText}>
-            {error instanceof Error ? error.message : "Failed to load chat"}
-          </Text>
+          <Text style={styles.errorText}>{error instanceof Error ? error.message : "Failed to load chat"}</Text>
           <Pressable onPress={() => void chatQuery.refetch()} style={styles.retryButton}>
             <Text style={styles.retryText}>Retry</Text>
           </Pressable>
@@ -341,25 +274,25 @@ export function ChatDetailContent({
         ref={listRef}
         data={messages}
         keyExtractor={(item) => item.id}
+        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
         renderItem={({ item }) => {
-          return item.format === "request" ? (
-            <RequestCard
-              chatId={chatId}
-              message={item}
-              messages={messages}
-              selfAgentId={selfAgentId}
-            />
-          ) : item.format === "card" ? (
-            <MessageCard message={item} />
+          const messageView =
+            item.format === "card" ? (
+              <MessageCard message={item} />
+            ) : (
+              <ChatMessageBubble
+                message={item}
+                isMe={item.senderId === memberId || item.senderId === user?.id}
+                senderName={participantNames(item.senderId)}
+                avatar={toBubbleAvatar(item.senderId)}
+              />
+            );
+          return askModalVisible && item.id === openAskId ? (
+            <View style={styles.hiddenModalMessage}>{messageView}</View>
           ) : (
-            <ChatMessageBubble
-              message={item}
-              isMe={item.senderId === memberId || item.senderId === user?.id}
-              senderName={participantNames(item.senderId)}
-              avatar={toBubbleAvatar(item.senderId)}
-            />
+            messageView
           );
         }}
         onStartReached={() => {
@@ -377,45 +310,20 @@ export function ChatDetailContent({
         }}
         onContentSizeChange={() => {
           if (!pendingScrollRef.current || userScrolledRef.current) return;
-          requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
+          // React Native can emit this callback repeatedly as markdown and
+          // images finish measuring. Consume the request before scheduling
+          // the one intentional initial/send scroll so later measurements do
+          // not drag the reader back to the bottom.
+          pendingScrollRef.current = false;
+          requestAnimationFrame(() => {
+            if (!userScrolledRef.current) listRef.current?.scrollToEnd({ animated: false });
+          });
         }}
       />
 
-      {openAsk && !askCollapsed && (
-        <View style={[styles.dockWrap, keyboardHeight > 0 && { marginBottom: keyboardHeight }]}>
-        <RequestDock
-          question={openAsk.message}
-          parsed={openAsk.parsed}
-          thread={askThread}
-          selfAgentId={selfAgentId}
-          collapsed={false}
-          onToggleCollapsed={() => setAskCollapsed(true)}
-          onSkip={() => {
-            void submitAnswer(openAsk.message, "");
-            void queryClient.invalidateQueries({ queryKey: ["chats", chatId, "open-requests"] });
-            setAskCollapsed(true);
-          }}
-          selected={askSelected}
-          onToggleOption={(index) =>
-            setAskSelected((prev) =>
-              openAsk.parsed.request.multiSelect === true
-                ? prev.includes(index)
-                  ? prev.filter((i) => i !== index)
-                  : [...prev, index]
-                : prev.includes(index)
-                  ? prev
-                  : [index],
-            )
-          }
-          askMode={askMode}
-          onToggleAskMode={() => setAskMode((m) => (m === "submit" ? "clarify" : "submit"))}
-        />
-        </View>
-      )}
-
-      {openAsk && askCollapsed && (
+      {openAsk && (
         <Pressable
-          onPress={() => setAskCollapsed(false)}
+          onPress={() => openAskModal(openAsk.message.id)}
           style={({ pressed }) => [styles.collapsedBar, pressed && styles.collapsedBarPressed]}
         >
           <Text style={styles.collapsedKicker}>Open question</Text>
@@ -423,28 +331,25 @@ export function ChatDetailContent({
         </Pressable>
       )}
 
-      <View style={[styles.composer, keyboardHeight > 0 && { marginBottom: keyboardHeight }]}>
-        <TextInput
-          style={styles.input}
-          value={message}
-          onChangeText={setMessage}
-          placeholder={openAsk ? (askMode === "clarify" ? "Ask the agent for clarification…" : "Answer the ask… (Send = Submit)") : "Message…"}
-          multiline
-          maxLength={4000}
-          // While an ask is open the keyboard's own key is the submit action,
-          // so answering never depends on a control the keyboard can cover.
-          // Ordinary composing keeps the newline behaviour a multiline field
-          // is expected to have.
-          returnKeyType={openAsk ? (askMode === "clarify" ? "send" : "done") : "default"}
-          submitBehavior={openAsk ? "submit" : "newline"}
-          onSubmitEditing={openAsk ? () => void handleSend() : undefined}
-        />
-        <Pressable onPress={handleSend} disabled={sending || !message.trim()}>
-          <View style={[styles.sendButton, (!message.trim() || sending) && styles.sendButtonDisabled]}>
-            <Text style={styles.sendText}>{openAsk ? (askMode === "clarify" ? "Ask" : "Submit") : "Send"}</Text>
-          </View>
-        </Pressable>
-      </View>
+      {!openAsk && (
+        <View style={[styles.composer, keyboardHeight > 0 && { marginBottom: keyboardHeight }]}>
+          <LiveMarkdownInput
+            style={styles.input}
+            value={message}
+            onChangeText={setMessage}
+            placeholder="Message…"
+            multiline
+            maxLength={4000}
+            returnKeyType="default"
+            submitBehavior="newline"
+          />
+          <Pressable onPress={handleSend} disabled={sending || !message.trim()}>
+            <View style={[styles.sendButton, (!message.trim() || sending) && styles.sendButtonDisabled]}>
+              <Text style={styles.sendText}>Send</Text>
+            </View>
+          </Pressable>
+        </View>
+      )}
     </View>
   );
 }
@@ -503,6 +408,9 @@ const styles = StyleSheet.create({
   messages: {
     paddingVertical: 8,
   },
+  hiddenModalMessage: {
+    opacity: 0,
+  },
   errorBox: {
     padding: 16,
     gap: 8,
@@ -520,9 +428,6 @@ const styles = StyleSheet.create({
   },
   retryText: {
     color: colors.accentText,
-  },
-  dockWrap: {
-    // RequestDock carries its own paddings; wrapper only hosts the lift.
   },
   collapsedBar: {
     flexDirection: "row",

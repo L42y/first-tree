@@ -1,6 +1,8 @@
 import type { Message } from "@first-tree/shared";
-import { askRequestSchema, type AskRequest } from "@first-tree/shared";
+import { type AskRequest, askRequestSchema } from "@first-tree/shared";
 import { api } from "./api";
+
+export const ASK_MODAL_ROUTE = "/chat/[chatId]/ask/[requestId]" as const;
 
 /**
  * "Ask user" support (format="request").
@@ -55,10 +57,7 @@ export function parseAskRequest(message: Message): ParsedRequest | null {
   };
 }
 
-export function findResolutionMessage(
-  messages: Message[],
-  requestId: string,
-): Message | null {
+export function findResolutionMessage(messages: Message[], requestId: string): Message | null {
   for (const msg of messages) {
     const resolves = msg.metadata?.resolves as { request?: unknown } | undefined;
     if (resolves && typeof resolves.request === "string" && resolves.request === requestId) {
@@ -74,18 +73,14 @@ export function findResolutionMessage(
  * truth for whether a dock should render (client-side mention matching
  * missed asks that fell outside the loaded message page).
  */
-export async function fetchOpenRequests(
-  chatId: string,
-  signal?: AbortSignal,
-): Promise<Message[]> {
+export async function fetchOpenRequests(chatId: string, signal?: AbortSignal): Promise<Message[]> {
   // The route answers `{ items }`, and the transport hands back the parsed body
   // verbatim. Testing the body itself for an array therefore never matched, so
   // this returned empty for every chat regardless of what the server said and
   // the dock was left relying on whatever happened to be in the message window.
-  const res = await api.get<{ items?: Message[] } | Message[]>(
-    `/chats/${encodeURIComponent(chatId)}/open-requests`,
-    { signal },
-  );
+  const res = await api.get<{ items?: Message[] } | Message[]>(`/chats/${encodeURIComponent(chatId)}/open-requests`, {
+    signal,
+  });
   if (Array.isArray(res)) return res;
   return Array.isArray(res?.items) ? res.items : [];
 }
@@ -96,11 +91,7 @@ export async function fetchOpenRequests(
  * independent of the loaded message window, so a clarification that scrolled
  * out of the latest page still renders.
  */
-export async function fetchRequestThread(
-  chatId: string,
-  requestId: string,
-  signal?: AbortSignal,
-): Promise<Message[]> {
+export async function fetchRequestThread(chatId: string, requestId: string, signal?: AbortSignal): Promise<Message[]> {
   const res = await api.get<{ items?: Message[] }>(
     `/chats/${encodeURIComponent(chatId)}/requests/${encodeURIComponent(requestId)}/thread`,
     { signal },
@@ -109,15 +100,10 @@ export async function fetchRequestThread(
 }
 
 /** Ask the original agent for clarification WITHOUT resolving the ask. */
-export async function askAgentForClarification(
-  chatId: string,
-  requestId: string,
-  content: string,
-): Promise<void> {
-  await api.post(
-    `/chats/${encodeURIComponent(chatId)}/requests/${encodeURIComponent(requestId)}/ask-agent`,
-    { content },
-  );
+export async function askAgentForClarification(chatId: string, requestId: string, content: string): Promise<void> {
+  await api.post(`/chats/${encodeURIComponent(chatId)}/requests/${encodeURIComponent(requestId)}/ask-agent`, {
+    content,
+  });
 }
 
 export async function resolveAskRequest(
