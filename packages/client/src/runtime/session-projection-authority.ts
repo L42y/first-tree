@@ -1,6 +1,6 @@
 import type { RuntimeState, SessionState } from "@first-tree/shared";
 import type { pino } from "../cloud/observability/logger.js";
-import type { SessionMessage } from "./handler.js";
+import type { ProviderContinuation, SessionMessage } from "./handler.js";
 import type { Trigger } from "./result-sink.js";
 import { SessionRegistry } from "./session-registry.js";
 
@@ -41,6 +41,8 @@ export type RuntimeSyncActiveSet = ReadonlySet<string> | null;
 export type SessionProjectionSessionFields = {
   chatId: string;
   claudeSessionId: string;
+  /** A provider-owned continuation waiting to reclaim a specific delivery. */
+  providerContinuation?: ProviderContinuation | null;
   /** Context source captured by the handler factory that owns this entry. */
   handlerSourceKey: string;
   status: SessionState;
@@ -50,6 +52,7 @@ export type SessionProjectionSessionFields = {
 export type EvictedMappingSnapshot = {
   readonly claudeSessionId: string;
   readonly lastActivity: number;
+  readonly continuation?: ProviderContinuation;
 };
 
 export type SessionProjectionAuthorityDeps = {
@@ -91,7 +94,7 @@ export class SessionProjectionAuthority<
   TSession extends SessionProjectionSessionFields = SessionProjectionSessionFields,
 > {
   private readonly sessions = new Map<string, TSession>();
-  private readonly evictedMappings = new Map<string, { claudeSessionId: string; lastActivity: number }>();
+  private readonly evictedMappings = new Map<string, EvictedMappingSnapshot>();
   /**
    * Current trigger (messageId + senderId) per chat — the message that kicked
    * off the current or most-recent turn. The result-sink clears it at turn end.
@@ -174,7 +177,26 @@ export class SessionProjectionAuthority<
     if (!stored) return null;
     const sessionId = resumableProviderSessionId(stored.claudeSessionId);
     if (!sessionId) return null;
-    return Object.freeze({ claudeSessionId: sessionId, lastActivity: stored.lastActivity });
+    const lastActivity = stored.lastActivity;
+    const storedContinuation = stored.continuation;
+    if (!storedContinuation) {
+      return Object.freeze({
+        claudeSessionId: sessionId,
+        lastActivity,
+      });
+    }
+    // Copy primitive continuation fields so the public snapshot is a fresh
+    // object, not the nested value identity still owned by evictedMappings.
+    return Object.freeze({
+      claudeSessionId: sessionId,
+      lastActivity,
+      continuation: {
+        kind: storedContinuation.kind,
+        provider: storedContinuation.provider,
+        sessionId: storedContinuation.sessionId,
+        messageId: storedContinuation.messageId,
+      },
+    });
   }
 
   /**
@@ -234,6 +256,37 @@ export class SessionProjectionAuthority<
     else this.evictedMappings.delete(chatId);
   }
 
+  /**
+   * Retire an unsafe-provider custody marker only after its exact delivery is
+   * durably committed. The marker can live in either the active projection or
+   * an eviction mapping depending on whether notice/ACK retry evicted the route.
+   */
+  clearProviderContinuationForAck(
+    chatId: string,
+    provider: ProviderContinuation["provider"],
+    messageIds: readonly string[],
+  ): boolean {
+    const matches = (continuation: ProviderContinuation): boolean =>
+      continuation.provider === provider && messageIds.includes(continuation.messageId);
+
+    let changed = false;
+    const session = this.sessions.get(chatId);
+    if (session?.providerContinuation && matches(session.providerContinuation)) {
+      session.providerContinuation = null;
+      changed = true;
+    }
+
+    const mapping = this.evictedMappings.get(chatId);
+    if (mapping?.continuation && matches(mapping.continuation)) {
+      this.recordEvictionResume(chatId, {
+        claudeSessionId: mapping.claudeSessionId,
+        lastActivity: mapping.lastActivity,
+      });
+      changed = true;
+    }
+    return changed;
+  }
+
   getLastTreeResolveAttemptAt(): number {
     return this.lastTreeResolveAttemptAt;
   }
@@ -287,6 +340,7 @@ export class SessionProjectionAuthority<
       this.addEvictedMapping(chatId, {
         claudeSessionId: resumableSessionId,
         lastActivity: data.lastActivity,
+        ...(data.continuation ? { continuation: data.continuation } : {}),
       });
       loadedCount++;
     }
@@ -299,7 +353,15 @@ export class SessionProjectionAuthority<
   persistRegistry(opts: { immediate?: boolean; throwOnFailure?: boolean } = {}): void {
     if (!this.registry) return;
 
-    const entries = new Map<string, { claudeSessionId: string; lastActivity: number; status: string }>();
+    const entries = new Map<
+      string,
+      {
+        claudeSessionId: string;
+        lastActivity: number;
+        status: string;
+        continuation?: ProviderContinuation;
+      }
+    >();
     for (const [chatId, session] of this.sessions) {
       const resumableSessionId = resumableProviderSessionId(
         session.claudeSessionId,
@@ -310,6 +372,7 @@ export class SessionProjectionAuthority<
         claudeSessionId: resumableSessionId,
         lastActivity: session.lastActivity,
         status: session.status,
+        ...(session.providerContinuation ? { continuation: session.providerContinuation } : {}),
       });
     }
     // Include evicted mappings for crash recovery
@@ -320,6 +383,7 @@ export class SessionProjectionAuthority<
         claudeSessionId: resumableSessionId,
         lastActivity: mapping.lastActivity,
         status: "evicted",
+        ...(mapping.continuation ? { continuation: mapping.continuation } : {}),
       });
     }
     // On shutdown we MUST write synchronously: the alternative is
@@ -349,13 +413,18 @@ export class SessionProjectionAuthority<
   }
 
   /** Add an evicted mapping, pruning the oldest if over capacity. */
-  private addEvictedMapping(chatId: string, mapping: { claudeSessionId: string; lastActivity: number }): void {
+  private addEvictedMapping(chatId: string, mapping: EvictedMappingSnapshot): void {
     const resumableSessionId = resumableProviderSessionId(mapping.claudeSessionId);
     if (!resumableSessionId) {
       this.evictedMappings.delete(chatId);
       return;
     }
-    this.evictedMappings.set(chatId, { ...mapping, claudeSessionId: resumableSessionId });
+    const continuation = mapping.continuation;
+    this.evictedMappings.set(chatId, {
+      claudeSessionId: resumableSessionId,
+      lastActivity: mapping.lastActivity,
+      ...(continuation ? { continuation: { ...continuation } } : {}),
+    });
     if (this.evictedMappings.size > MAX_EVICTED_MAPPINGS) {
       // Map iteration order is insertion order — first key is the oldest
       const oldest = this.evictedMappings.keys().next().value;
