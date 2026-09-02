@@ -414,6 +414,11 @@ async function withRuntimeLock<T>(
 ): Promise<T> {
   const lockPath = `${cacheRoot}.lock`;
   const deadline = Date.now() + timeoutMs;
+  // A truly clean host has no `.../zcode/official/` directory at all yet, and
+  // the non-recursive `mkdir(lockPath)` below requires that parent to already
+  // exist. Ensure it up front so first-ever admission on a clean host doesn't
+  // fail closed with a bare ENOENT before it ever reaches the retry loop.
+  await mkdir(dirname(lockPath), { recursive: true });
   for (;;) {
     try {
       await mkdir(lockPath, { recursive: false });
