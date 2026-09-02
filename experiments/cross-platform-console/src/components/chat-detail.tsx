@@ -1,4 +1,4 @@
-import type { ChatDetail, ListMeChatsResponse, MeChatRow, Message } from "@first-tree/shared";
+import type { ChatDetail, ListMeChatsResponse, Message } from "@first-tree/shared";
 import { extractMentions } from "@first-tree/shared";
 import { type InfiniteData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePathname, useRouter } from "expo-router";
@@ -21,6 +21,7 @@ import { LiveMarkdownInput, type LiveMarkdownInputHandle } from "~/components/li
 import { MessageCard } from "~/components/message-card";
 import { ASK_MODAL_ROUTE, fetchOpenRequests, parseAskRequest } from "~/lib/ask";
 import { useAuth } from "~/lib/auth-context";
+import { markChatRowsRead, patchChatListActivity } from "~/lib/chat-list-cache";
 import {
   countUnreadMessages,
   findFirstUnreadIndex,
@@ -44,29 +45,6 @@ import {
 import { colors } from "~/lib/theme";
 
 const PAGE_SIZE = 50;
-
-function patchChatRow(row: MeChatRow, chatId: string, preview: string, activityAt: string): MeChatRow {
-  if (row.chatId !== chatId) return row;
-  return {
-    ...row,
-    chatHasExplicitMentionToMe: false,
-    unreadMentionCount: 0,
-    lastMessageAt: activityAt,
-    lastMessagePreview: preview,
-    activityAt,
-  };
-}
-
-function markChatRowsRead(previous: ListMeChatsResponse | undefined, chatId: string): ListMeChatsResponse | undefined {
-  if (!previous) return undefined;
-  const clearRow = (row: MeChatRow): MeChatRow =>
-    row.chatId === chatId ? { ...row, unreadMentionCount: 0, chatHasExplicitMentionToMe: false } : row;
-  return {
-    ...previous,
-    priorityRows: { ...previous.priorityRows, pinned: previous.priorityRows.pinned.map(clearRow) },
-    rows: previous.rows.map(clearRow),
-  };
-}
 
 type TimelineItem =
   | { kind: "message"; key: string; message: Message }
@@ -488,16 +466,7 @@ export function ChatDetailContent({
     // The list row is a projection of the server-side chat. Mirror the same
     // fields optimistically so returning to Chats never shows stale content.
     queryClient.setQueriesData<ListMeChatsResponse>({ queryKey: ["me", "chats", "list"] }, (previous) =>
-      previous
-        ? {
-            ...previous,
-            priorityRows: {
-              ...previous.priorityRows,
-              pinned: previous.priorityRows.pinned.map((row) => patchChatRow(row, chatId, text, optimisticAt)),
-            },
-            rows: previous.rows.map((row) => patchChatRow(row, chatId, text, optimisticAt)),
-          }
-        : undefined,
+      patchChatListActivity(previous, chatId, text, optimisticAt),
     );
     setMessage("");
     setCaret(0);
@@ -513,16 +482,7 @@ export function ChatDetailContent({
         patchFirstMessagePage(previous, (items) => items.map((item) => (item.id === optimisticId ? saved : item))),
       );
       queryClient.setQueriesData<ListMeChatsResponse>({ queryKey: ["me", "chats", "list"] }, (previous) =>
-        previous
-          ? {
-              ...previous,
-              priorityRows: {
-                ...previous.priorityRows,
-                pinned: previous.priorityRows.pinned.map((row) => patchChatRow(row, chatId, text, saved.createdAt)),
-              },
-              rows: previous.rows.map((row) => patchChatRow(row, chatId, text, saved.createdAt)),
-            }
-          : undefined,
+        patchChatListActivity(previous, chatId, text, saved.createdAt),
       );
       await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
       await queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
