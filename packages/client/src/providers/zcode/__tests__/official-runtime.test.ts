@@ -114,6 +114,37 @@ describe("ensureOfficialZcodeRuntime", () => {
     expect(calls).toEqual({ fetch: 1, tar: 1 });
   });
 
+  it("admits the runtime on a truly clean host with no pre-existing cache directory tree", async () => {
+    // A fresh `$HOME` has no `.../zcode/official/` path at all yet — unlike
+    // every other case here, whose `cacheRoot` sits directly inside an
+    // already-created `mkdtemp` root, this one nests it under directories
+    // that do not exist yet, so lock acquisition must create its own parent
+    // before the first `mkdir(lockPath, { recursive: false })` attempt.
+    const runtime = Buffer.from("clean-host-runtime-bytes");
+    const artifact = validArtifact(Buffer.from("compressed-payload"));
+    const cacheRoot = join(await makeRoot(), "cache", "first-tree", "zcode", "official", "test-package", "runtime");
+
+    const result = await ensureOfficialZcodeRuntime({
+      cacheRoot,
+      contract: testContract(runtime, artifact),
+      platform: "linux",
+      arch: "x64",
+      fetchImpl: (async () => new Response(artifact, { status: 200 })) as typeof fetch,
+      runTar: async (_args, cwd) => {
+        const target = join(cwd, "opt/ZCode/resources/glm/zcode.cjs");
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, runtime);
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      command: process.execPath,
+      args: [join(cacheRoot, "zcode.cjs")],
+      runtimePath: join(cacheRoot, "zcode.cjs"),
+    });
+  });
+
   it("rejects a downloaded artifact whose digest does not match and removes the cache", async () => {
     const cacheRoot = join(await makeRoot(), "runtime");
     let tarCalls = 0;
