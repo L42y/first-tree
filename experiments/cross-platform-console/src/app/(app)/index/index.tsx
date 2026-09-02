@@ -241,7 +241,7 @@ export default function ChatListScreen() {
   // above the list as a sibling now rides inside it via ListHeaderComponent.
   const listHeader = (
     <View>
-      <LargeTitle>Chats</LargeTitle>
+      <LargeTitle scrollY={scrollY}>Chats</LargeTitle>
       <View style={styles.filters}>
         <Pressable onPress={() => setFilter("all")} style={[styles.filter, filter === "all" && styles.filterActive]}>
           <Text style={[styles.filterText, filter === "all" && styles.filterActiveText]}>All</Text>

@@ -86,7 +86,7 @@ export default function DocsScreen() {
           { paddingTop: insets.top, paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
         ]}
       >
-        <LargeTitle>Docs</LargeTitle>
+        <LargeTitle scrollY={scrollY}>Docs</LargeTitle>
         <View style={styles.filters}>
           {STATUS_FILTERS.map((s) => (
             <Pressable

@@ -57,7 +57,7 @@ export default function ContextScreen() {
           <RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} tintColor={colors.textMuted} />
         }
       >
-        <LargeTitle>Context</LargeTitle>
+        <LargeTitle scrollY={scrollY}>Context</LargeTitle>
         <View style={styles.windowRow}>
           {WINDOWS.map((w) => (
             <Pressable key={w} onPress={() => setWindow(w)} style={[styles.chip, window === w && styles.chipActive]}>

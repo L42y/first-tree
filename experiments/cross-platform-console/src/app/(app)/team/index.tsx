@@ -73,7 +73,7 @@ export default function TeamScreen() {
 
   const listHeader = (
     <View>
-      <LargeTitle>Team</LargeTitle>
+      <LargeTitle scrollY={scrollY}>Team</LargeTitle>
       <Text style={styles.subtitle}>{(data ?? []).length} agents you manage</Text>
     </View>
   );

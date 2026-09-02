@@ -61,7 +61,7 @@ export default function SettingsScreen() {
           { paddingTop: insets.top, paddingBottom: CONTENT_BOTTOM_PADDING + tabBarInset },
         ]}
       >
-        <LargeTitle>Settings</LargeTitle>
+        <LargeTitle scrollY={scrollY}>Settings</LargeTitle>
         <Text style={styles.sectionHeader}>Profile</Text>
         <View style={styles.card}>
           <View style={styles.profileRow}>

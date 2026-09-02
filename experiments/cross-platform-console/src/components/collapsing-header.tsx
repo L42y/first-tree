@@ -13,14 +13,23 @@ import { colors } from "~/lib/theme";
  * bypasses that entirely by animating our own title block instead of relying
  * on the broken native one.
  *
+ * Two separate title elements (the large one is scrollable content, the
+ * compact one lives in the overlay bar) rather than one element morphing —
+ * that's the same technique UIKit itself uses (a collapsing large-title
+ * container cross-fading with the compact bar), not a shortcut. Both ends
+ * animate scale/position/opacity together so the handoff reads as one
+ * continuous motion instead of two independent, disconnected fades.
+ *
  * Plain Animated (native-driven), not react-native-reanimated: this is a
- * single scroll-position interpolation, exactly what Animated.event with
+ * scroll-position interpolation, exactly what Animated.event with
  * useNativeDriver already handles at 60fps — reanimated is a native module
  * that isn't compiled into the installed dev client yet, so pulling it in
  * for this would mean another EAS build + reinstall for no visual gain here.
  */
 
 export const COLLAPSED_BAR_HEIGHT = 44;
+// The animation runs over the large title's own height: by the time it has
+// scrolled fully out of view, the compact bar has fully taken over.
 const LARGE_TITLE_HEIGHT = 52;
 
 export function useCollapsingHeaderScroll(onScroll?: (e: NativeSyntheticEvent<NativeScrollEvent>) => void) {
@@ -39,11 +48,39 @@ export function useCollapsingHeaderScroll(onScroll?: (e: NativeSyntheticEvent<Na
   return { scrollY, onScroll: handleScroll };
 }
 
-/** Renders as the first item of the scrollable content — scrolls away like any other row. */
-export function LargeTitle({ children }: { children: string }) {
+/**
+ * Renders as the first item of the scrollable content. It both scrolls away
+ * naturally with the content *and* actively shrinks/fades/lifts as it goes,
+ * so the motion reads as the title collapsing rather than just content
+ * sliding off-screen.
+ */
+export function LargeTitle({ children, scrollY }: { children: string; scrollY: Animated.Value }) {
+  const opacity = scrollY.interpolate({
+    inputRange: [0, LARGE_TITLE_HEIGHT * 0.8],
+    outputRange: [1, 0],
+    extrapolate: "clamp",
+  });
+  const scale = scrollY.interpolate({
+    inputRange: [0, LARGE_TITLE_HEIGHT],
+    outputRange: [1, 0.82],
+    extrapolate: "clamp",
+  });
+  const translateY = scrollY.interpolate({
+    inputRange: [0, LARGE_TITLE_HEIGHT],
+    outputRange: [0, -10],
+    extrapolate: "clamp",
+  });
+
   return (
     <View style={styles.largeTitleWrap}>
-      <Animated.Text style={styles.largeTitleText}>{children}</Animated.Text>
+      <Animated.Text
+        style={[styles.largeTitleText, { opacity, transform: [{ scale }, { translateY }] }]}
+        // The large title only ever shrinks toward its own left edge (it
+        // never needs to be centered — it hands off to the compact bar's
+        // own centered title instead), so anchor the scale there.
+      >
+        {children}
+      </Animated.Text>
     </View>
   );
 }
@@ -66,18 +103,37 @@ export function CollapsingHeaderBar({
     extrapolate: "clamp",
   });
   const titleOpacity = scrollY.interpolate({
-    inputRange: [LARGE_TITLE_HEIGHT * 0.6, LARGE_TITLE_HEIGHT],
+    inputRange: [LARGE_TITLE_HEIGHT * 0.45, LARGE_TITLE_HEIGHT],
     outputRange: [0, 1],
+    extrapolate: "clamp",
+  });
+  const titleTranslateY = scrollY.interpolate({
+    inputRange: [LARGE_TITLE_HEIGHT * 0.45, LARGE_TITLE_HEIGHT],
+    outputRange: [8, 0],
+    extrapolate: "clamp",
+  });
+  const titleScale = scrollY.interpolate({
+    inputRange: [LARGE_TITLE_HEIGHT * 0.45, LARGE_TITLE_HEIGHT],
+    outputRange: [0.92, 1],
     extrapolate: "clamp",
   });
 
   return (
-    <View style={[styles.barContainer, { height: insets.top + COLLAPSED_BAR_HEIGHT }]} pointerEvents="box-none">
+    <View
+      style={[styles.barContainer, { height: insets.top + COLLAPSED_BAR_HEIGHT }]}
+      pointerEvents="box-none"
+    >
       <Animated.View style={[StyleSheet.absoluteFill, styles.barBackground, { opacity: barOpacity }]} />
       <Animated.View style={[styles.barBorder, { opacity: barOpacity }]} />
       <View style={[styles.barRow, { top: insets.top }]}>
         <View style={styles.barSide}>{headerLeft}</View>
-        <Animated.Text style={[styles.barTitle, { opacity: titleOpacity }]} numberOfLines={1}>
+        <Animated.Text
+          style={[
+            styles.barTitle,
+            { opacity: titleOpacity, transform: [{ translateY: titleTranslateY }, { scale: titleScale }] },
+          ]}
+          numberOfLines={1}
+        >
           {title}
         </Animated.Text>
         <View style={[styles.barSide, styles.barSideRight]}>{headerRight}</View>
@@ -96,6 +152,7 @@ const styles = StyleSheet.create({
     fontSize: 34,
     fontWeight: "bold",
     color: colors.text,
+    transformOrigin: "left",
   },
   barContainer: {
     position: "absolute",
