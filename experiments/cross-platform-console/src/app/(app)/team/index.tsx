@@ -52,73 +52,74 @@ export default function TeamScreen() {
     }));
   }, [data]);
 
+  // The list must be the screen's sole/first native child (react-native-screens
+  // walks subview[0] down from the screen root to find the scroll view it
+  // ties the large-title collapse animation to), so the subtitle/loading/error
+  // states that used to sit above it as siblings now ride inside via
+  // ListHeaderComponent/ListEmptyComponent instead.
+  const listEmpty = isLoading ? (
+    <View style={styles.center}>
+      <ActivityIndicator size="large" color={colors.textMuted} />
+    </View>
+  ) : error ? (
+    <View style={styles.center}>
+      <Text style={styles.errorText}>{error instanceof Error ? error.message : "Failed to load team"}</Text>
+    </View>
+  ) : null;
+
   const listPane = (
     <View style={[styles.container, styles.teamPane]}>
-      <Text style={styles.subtitle}>{(data ?? []).length} agents you manage</Text>
-
-      {isLoading && (
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color={colors.textMuted} />
-        </View>
-      )}
-
-      {error && !isLoading && (
-        <View style={styles.center}>
-          <Text style={styles.errorText}>{error instanceof Error ? error.message : "Failed to load team"}</Text>
-        </View>
-      )}
-
-      {!isLoading && !error && (
-        <FlatList
-          data={grouped}
-          keyExtractor={(g) => g.organizationId}
-          refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} tintColor={colors.textMuted} />
-          }
-          contentContainerStyle={[
-            styles.listContent,
-            numColumns > 1 && styles.widePadding,
-            { paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
-          ]}
-          renderItem={({ item }) => (
-            <View>
-              <Text style={styles.sectionHeader}>{item.organizationId}</Text>
-              {item.agents.map((agent) => (
-                <Pressable
-                  key={agent.uuid}
-                  onPress={() => {
-                    if (isWide) {
-                      setSelected({ uuid: agent.uuid, provider: agent.runtimeProvider ?? "" });
-                      return;
-                    }
-                    router.push({
-                      pathname: `/agent/${agent.uuid}`,
-                      params: { provider: agent.runtimeProvider ?? "" },
-                    } as never);
-                  }}
-                  style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-                >
-                  <Avatar
-                    name={agent.displayName}
-                    seed={agent.uuid}
-                    imageUrl={agent.avatarImageUrl}
-                    kind={agent.type === "human" ? "human" : "agent"}
-                    size={44}
-                  />
-                  <View style={styles.rowMain}>
-                    <Text style={styles.agentName} numberOfLines={1}>
-                      {agent.displayName}
-                    </Text>
-                    <Text style={styles.agentMeta} numberOfLines={1}>
-                      {agent.runtimeProvider ?? agent.type} · {agent.status}
-                    </Text>
-                  </View>
-                </Pressable>
-              ))}
-            </View>
-          )}
-        />
-      )}
+      <FlatList
+        data={grouped}
+        keyExtractor={(g) => g.organizationId}
+        refreshControl={
+          <RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} tintColor={colors.textMuted} />
+        }
+        contentContainerStyle={[
+          styles.listContent,
+          numColumns > 1 && styles.widePadding,
+          { paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
+        ]}
+        ListHeaderComponent={<Text style={styles.subtitle}>{(data ?? []).length} agents you manage</Text>}
+        ListEmptyComponent={listEmpty}
+        renderItem={({ item }) => (
+          <View>
+            <Text style={styles.sectionHeader}>{item.organizationId}</Text>
+            {item.agents.map((agent) => (
+              <Pressable
+                key={agent.uuid}
+                onPress={() => {
+                  if (isWide) {
+                    setSelected({ uuid: agent.uuid, provider: agent.runtimeProvider ?? "" });
+                    return;
+                  }
+                  router.push({
+                    pathname: `/agent/${agent.uuid}`,
+                    params: { provider: agent.runtimeProvider ?? "" },
+                  } as never);
+                }}
+                style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+              >
+                <Avatar
+                  name={agent.displayName}
+                  seed={agent.uuid}
+                  imageUrl={agent.avatarImageUrl}
+                  kind={agent.type === "human" ? "human" : "agent"}
+                  size={44}
+                />
+                <View style={styles.rowMain}>
+                  <Text style={styles.agentName} numberOfLines={1}>
+                    {agent.displayName}
+                  </Text>
+                  <Text style={styles.agentMeta} numberOfLines={1}>
+                    {agent.runtimeProvider ?? agent.type} · {agent.status}
+                  </Text>
+                </View>
+              </Pressable>
+            ))}
+          </View>
+        )}
+      />
     </View>
   );
 

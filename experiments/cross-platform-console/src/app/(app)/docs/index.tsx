@@ -72,35 +72,40 @@ export default function DocsScreen() {
     );
   }
 
+  // The ScrollView must be the screen's sole/first native child
+  // (react-native-screens walks subview[0] down from the screen root to find
+  // the scroll view it ties the large-title collapse animation to), so it's
+  // always mounted — the status chips, loading/empty states, and the doc
+  // list all render as its content instead of as outer siblings.
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ ...nativeHeaderOptions, title: "Docs" }} />
 
-      <View style={styles.filters}>
-        {STATUS_FILTERS.map((s) => (
-          <Pressable
-            key={s}
-            onPress={() => setStatusFilter(s)}
-            style={[styles.chip, statusFilter === s && styles.chipActive]}
-          >
-            <Text style={[styles.chipText, statusFilter === s && styles.chipTextActive]}>{s}</Text>
-          </Pressable>
-        ))}
-      </View>
+      <ScrollView
+        contentContainerStyle={[
+          styles.list,
+          isWide && styles.wideList,
+          { paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
+        ]}
+      >
+        <View style={styles.filters}>
+          {STATUS_FILTERS.map((s) => (
+            <Pressable
+              key={s}
+              onPress={() => setStatusFilter(s)}
+              style={[styles.chip, statusFilter === s && styles.chipActive]}
+            >
+              <Text style={[styles.chipText, statusFilter === s && styles.chipTextActive]}>{s}</Text>
+            </Pressable>
+          ))}
+        </View>
 
-      {listQuery.isLoading ? (
-        <ActivityIndicator style={styles.centerSelf} color={colors.textMuted} />
-      ) : (listQuery.data?.items.length ?? 0) === 0 ? (
-        <Text style={styles.emptyText}>No documents.</Text>
-      ) : (
-        <ScrollView
-          contentContainerStyle={[
-            styles.list,
-            isWide && styles.wideList,
-            { paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
-          ]}
-        >
-          {(listQuery.data?.items ?? []).map((doc) => (
+        {listQuery.isLoading ? (
+          <ActivityIndicator style={styles.centerSelf} color={colors.textMuted} />
+        ) : (listQuery.data?.items.length ?? 0) === 0 ? (
+          <Text style={styles.emptyText}>No documents.</Text>
+        ) : (
+          (listQuery.data?.items ?? []).map((doc) => (
             <Pressable
               key={doc.id}
               onPress={() => setOpenSlug(doc.slug)}
@@ -116,9 +121,9 @@ export default function DocsScreen() {
                 {doc.openCommentCount > 0 ? ` · ${doc.openCommentCount} comments` : ""}
               </Text>
             </Pressable>
-          ))}
-        </ScrollView>
-      )}
+          ))
+        )}
+      </ScrollView>
     </View>
   );
 }

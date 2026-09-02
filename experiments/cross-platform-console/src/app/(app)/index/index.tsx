@@ -238,8 +238,12 @@ export default function ChatListScreen() {
     setRefreshing(false);
   }, [refetch]);
 
-  const listPane = (
-    <View style={[styles.container, isWide && styles.listPane]}>
+  // The list must be the screen's sole/first native child (react-native-screens
+  // walks subview[0] down from the screen root to find the scroll view it
+  // ties the large-title collapse animation to) — everything that used to sit
+  // above the list as a sibling now rides inside it via ListHeaderComponent.
+  const listHeader = (
+    <View>
       <View style={styles.filters}>
         <Pressable onPress={() => setFilter("all")} style={[styles.filter, filter === "all" && styles.filterActive]}>
           <Text style={[styles.filterText, filter === "all" && styles.filterActiveText]}>All</Text>
@@ -263,22 +267,27 @@ export default function ChatListScreen() {
           autoCorrect={false}
         />
       )}
+    </View>
+  );
 
-      {isLoading && !data && (
-        <View style={styles.center}>
-          <ActivityIndicator />
-        </View>
-      )}
+  const listEmpty =
+    isLoading && !data ? (
+      <View style={styles.center}>
+        <ActivityIndicator />
+      </View>
+    ) : error ? (
+      <View style={styles.errorBox}>
+        <Text style={styles.errorText}>{error instanceof Error ? error.message : "Failed to load chats"}</Text>
+        <Pressable onPress={() => refetch()} style={styles.retryButton}>
+          <Text style={styles.retryText}>Retry</Text>
+        </Pressable>
+      </View>
+    ) : listItems.length === 0 ? (
+      <Text style={styles.empty}>{user?.displayName ? `No chats for ${user.displayName} yet.` : "No chats yet."}</Text>
+    ) : null;
 
-      {error && (
-        <View style={styles.errorBox}>
-          <Text style={styles.errorText}>{error instanceof Error ? error.message : "Failed to load chats"}</Text>
-          <Pressable onPress={() => refetch()} style={styles.retryButton}>
-            <Text style={styles.retryText}>Retry</Text>
-          </Pressable>
-        </View>
-      )}
-
+  const listPane = (
+    <View style={[styles.container, isWide && styles.listPane]}>
       <LegendList
         ref={listRef as never}
         data={listItems}
@@ -303,13 +312,8 @@ export default function ChatListScreen() {
         }
         estimatedItemSize={76}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.textMuted} />}
-        ListEmptyComponent={
-          !isLoading && listItems.length === 0 ? (
-            <Text style={styles.empty}>
-              {user?.displayName ? `No chats for ${user.displayName} yet.` : "No chats yet."}
-            </Text>
-          ) : null
-        }
+        ListHeaderComponent={listHeader}
+        ListEmptyComponent={listEmpty}
       />
     </View>
   );

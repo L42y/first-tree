@@ -39,40 +39,45 @@ export default function ContextScreen() {
 
   const updates = data?.updates ?? [];
 
+  // The ScrollView must be the screen's sole/first native child
+  // (react-native-screens walks subview[0] down from the screen root to find
+  // the scroll view it ties the large-title collapse animation to), so it's
+  // always mounted — the window chips, loading/error/empty states, and the
+  // update list all render as its content instead of as outer siblings.
   return (
     <View style={styles.container}>
-      <View style={styles.windowRow}>
-        {WINDOWS.map((w) => (
-          <Pressable key={w} onPress={() => setWindow(w)} style={[styles.chip, window === w && styles.chipActive]}>
-            <Text style={[styles.chipText, window === w && styles.chipTextActive]}>{w}</Text>
-          </Pressable>
-        ))}
-      </View>
+      <ScrollView
+        contentContainerStyle={[
+          styles.list,
+          isWide && styles.wideList,
+          { paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
+        ]}
+        refreshControl={
+          <RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} tintColor={colors.textMuted} />
+        }
+      >
+        <View style={styles.windowRow}>
+          {WINDOWS.map((w) => (
+            <Pressable key={w} onPress={() => setWindow(w)} style={[styles.chip, window === w && styles.chipActive]}>
+              <Text style={[styles.chipText, window === w && styles.chipTextActive]}>{w}</Text>
+            </Pressable>
+          ))}
+        </View>
 
-      {isLoading && !data ? (
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color={colors.textMuted} />
-        </View>
-      ) : error ? (
-        <View style={styles.center}>
-          <Text style={styles.errorText}>{error instanceof Error ? error.message : "Failed to load context"}</Text>
-        </View>
-      ) : updates.length === 0 ? (
-        <View style={[styles.center, isWide && styles.wideCenter]}>
-          <Text style={styles.emptyText}>No context changes in the last {window}.</Text>
-        </View>
-      ) : (
-        <ScrollView
-          contentContainerStyle={[
-            styles.list,
-            isWide && styles.wideList,
-            { paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
-          ]}
-          refreshControl={
-            <RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} tintColor={colors.textMuted} />
-          }
-        >
-          {updates.map((update) => {
+        {isLoading && !data ? (
+          <View style={styles.center}>
+            <ActivityIndicator size="large" color={colors.textMuted} />
+          </View>
+        ) : error ? (
+          <View style={styles.center}>
+            <Text style={styles.errorText}>{error instanceof Error ? error.message : "Failed to load context"}</Text>
+          </View>
+        ) : updates.length === 0 ? (
+          <View style={[styles.center, isWide && styles.wideCenter]}>
+            <Text style={styles.emptyText}>No context changes in the last {window}.</Text>
+          </View>
+        ) : (
+          updates.map((update) => {
             const expanded = expandedId === update.id;
             return (
               <Pressable
@@ -95,9 +100,9 @@ export default function ContextScreen() {
                 </View>
               </Pressable>
             );
-          })}
-        </ScrollView>
-      )}
+          })
+        )}
+      </ScrollView>
     </View>
   );
 }
