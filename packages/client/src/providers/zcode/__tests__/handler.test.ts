@@ -98,6 +98,7 @@ function context(events: unknown[], forwarded: string[]): SessionContext {
     log: vi.fn(),
     chatId: "chat-1",
     recordProviderActivity: vi.fn(),
+    noteTurnStart: () => {},
     emitEvent: (event) => events.push(event),
     forwardResult: async (text) => {
       forwarded.push(text);
