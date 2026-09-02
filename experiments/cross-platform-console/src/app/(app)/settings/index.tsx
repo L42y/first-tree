@@ -1,6 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Avatar } from "~/components/avatar";
+import { CollapsingHeaderBar, LargeTitle, useCollapsingHeaderScroll } from "~/components/collapsing-header";
 import { useAuth } from "~/lib/auth-context";
 import { API_BASE_URL } from "~/lib/env";
 import { getMyAuthProviders, listGitHubRepos } from "~/lib/integrations-api";
@@ -18,6 +20,8 @@ export default function SettingsScreen() {
   const { user, teamDisplayName, organizationId, selectOrganization, logout } = useAuth();
   const queryClient = useQueryClient();
   const tabBarInset = useTabBarFloatingInset();
+  const insets = useSafeAreaInsets();
+  const { scrollY, onScroll } = useCollapsingHeaderScroll();
 
   const switchOrg = async (id: string) => {
     if (id === organizationId) return;
@@ -49,7 +53,15 @@ export default function SettingsScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: CONTENT_BOTTOM_PADDING + tabBarInset }]}>
+      <ScrollView
+        onScroll={onScroll}
+        scrollEventThrottle={16}
+        contentContainerStyle={[
+          styles.content,
+          { paddingTop: insets.top, paddingBottom: CONTENT_BOTTOM_PADDING + tabBarInset },
+        ]}
+      >
+        <LargeTitle>Settings</LargeTitle>
         <Text style={styles.sectionHeader}>Profile</Text>
         <View style={styles.card}>
           <View style={styles.profileRow}>
@@ -143,6 +155,7 @@ export default function SettingsScreen() {
           <Text style={styles.logoutText}>Log out</Text>
         </Pressable>
       </ScrollView>
+      <CollapsingHeaderBar title="Settings" scrollY={scrollY} />
     </View>
   );
 }

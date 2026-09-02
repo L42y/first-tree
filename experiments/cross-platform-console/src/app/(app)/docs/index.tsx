@@ -1,11 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { Stack } from "expo-router";
 import { useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { CollapsingHeaderBar, LargeTitle, useCollapsingHeaderScroll } from "~/components/collapsing-header";
 import { MarkdownText } from "~/components/markdown-text";
 import type { DocStatus } from "~/lib/docs-api";
 import { getDocBySlug, listDocs } from "~/lib/docs-api";
-import { nativeHeaderOptions } from "~/lib/native-header";
 import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
 import { colors } from "~/lib/theme";
 
@@ -22,6 +22,8 @@ export default function DocsScreen() {
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
   const tabBarInset = useTabBarFloatingInset();
+  const insets = useSafeAreaInsets();
+  const { scrollY, onScroll } = useCollapsingHeaderScroll();
   const [statusFilter, setStatusFilter] = useState<DocStatus | "all">("all");
   const [openSlug, setOpenSlug] = useState<string | null>(null);
 
@@ -41,17 +43,9 @@ export default function DocsScreen() {
     return (
       <View style={styles.container}>
         {/* Reader mode swaps the list's large title for a compact one — the
-            in-content Back below (not the native back arrow) returns to the
-            list, since this is local state, not a navigation push. */}
-        <Stack.Screen
-          options={{
-            ...nativeHeaderOptions,
-            headerLargeTitle: false,
-            headerBackVisible: false,
-            title: docQuery.data?.doc.title ?? "Doc",
-          }}
-        />
-        <View style={styles.header}>
+            in-content Back below returns to the list, since this is local
+            state, not a navigation push. */}
+        <View style={[styles.header, { paddingTop: insets.top + 12 }]}>
           <Pressable onPress={() => setOpenSlug(null)} hitSlop={8}>
             <Text style={styles.back}>Docs</Text>
           </Pressable>
@@ -72,22 +66,18 @@ export default function DocsScreen() {
     );
   }
 
-  // The ScrollView must be the screen's sole/first native child
-  // (react-native-screens walks subview[0] down from the screen root to find
-  // the scroll view it ties the large-title collapse animation to), so it's
-  // always mounted — the status chips, loading/empty states, and the doc
-  // list all render as its content instead of as outer siblings.
   return (
     <View style={styles.container}>
-      <Stack.Screen options={{ ...nativeHeaderOptions, title: "Docs" }} />
-
       <ScrollView
+        onScroll={onScroll}
+        scrollEventThrottle={16}
         contentContainerStyle={[
           styles.list,
           isWide && styles.wideList,
-          { paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
+          { paddingTop: insets.top, paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
         ]}
       >
+        <LargeTitle>Docs</LargeTitle>
         <View style={styles.filters}>
           {STATUS_FILTERS.map((s) => (
             <Pressable
@@ -124,6 +114,7 @@ export default function DocsScreen() {
           ))
         )}
       </ScrollView>
+      <CollapsingHeaderBar title="Docs" scrollY={scrollY} />
     </View>
   );
 }

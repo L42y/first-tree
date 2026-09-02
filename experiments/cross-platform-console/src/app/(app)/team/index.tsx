@@ -11,9 +11,11 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AgentDetailContent } from "~/components/agent-detail";
 import { Avatar } from "~/components/avatar";
+import { CollapsingHeaderBar, LargeTitle, useCollapsingHeaderScroll } from "~/components/collapsing-header";
 import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
 import type { ManagedAgent } from "~/lib/team-api";
 import { listManagedAgents } from "~/lib/team-api";
@@ -30,6 +32,8 @@ export default function TeamScreen() {
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
   const tabBarInset = useTabBarFloatingInset();
+  const insets = useSafeAreaInsets();
+  const { scrollY, onScroll } = useCollapsingHeaderScroll();
   const [selected, setSelected] = useState<{ uuid: string; provider?: string } | null>(null);
   const numColumns = width >= 1024 ? 2 : 1;
 
@@ -67,20 +71,29 @@ export default function TeamScreen() {
     </View>
   ) : null;
 
+  const listHeader = (
+    <View>
+      <LargeTitle>Team</LargeTitle>
+      <Text style={styles.subtitle}>{(data ?? []).length} agents you manage</Text>
+    </View>
+  );
+
   const listPane = (
     <View style={[styles.container, styles.teamPane]}>
       <FlatList
         data={grouped}
         keyExtractor={(g) => g.organizationId}
+        onScroll={onScroll}
+        scrollEventThrottle={16}
         refreshControl={
           <RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} tintColor={colors.textMuted} />
         }
         contentContainerStyle={[
           styles.listContent,
           numColumns > 1 && styles.widePadding,
-          { paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
+          { paddingTop: insets.top, paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
         ]}
-        ListHeaderComponent={<Text style={styles.subtitle}>{(data ?? []).length} agents you manage</Text>}
+        ListHeaderComponent={listHeader}
         ListEmptyComponent={listEmpty}
         renderItem={({ item }) => (
           <View>
@@ -119,6 +132,15 @@ export default function TeamScreen() {
             ))}
           </View>
         )}
+      />
+      <CollapsingHeaderBar
+        title="Team"
+        scrollY={scrollY}
+        headerRight={
+          <Pressable onPress={() => router.push("/agent/new")} hitSlop={8}>
+            <Text style={styles.addButtonText}>+ New</Text>
+          </Pressable>
+        }
       />
     </View>
   );
@@ -177,6 +199,11 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.75,
+  },
+  addButtonText: {
+    color: colors.accent,
+    fontWeight: "700",
+    fontSize: 15,
   },
   widePadding: {
     paddingHorizontal: 24,

@@ -10,7 +10,9 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { CollapsingHeaderBar, LargeTitle, useCollapsingHeaderScroll } from "~/components/collapsing-header";
 import type { ContextTreeWindow } from "~/lib/context-api";
 import { getContextTreeSnapshot } from "~/lib/context-api";
 import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
@@ -28,6 +30,8 @@ export default function ContextScreen() {
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
   const tabBarInset = useTabBarFloatingInset();
+  const insets = useSafeAreaInsets();
+  const { scrollY, onScroll } = useCollapsingHeaderScroll();
   const [window, setWindow] = useState<ContextTreeWindow>("7d");
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -39,23 +43,21 @@ export default function ContextScreen() {
 
   const updates = data?.updates ?? [];
 
-  // The ScrollView must be the screen's sole/first native child
-  // (react-native-screens walks subview[0] down from the screen root to find
-  // the scroll view it ties the large-title collapse animation to), so it's
-  // always mounted — the window chips, loading/error/empty states, and the
-  // update list all render as its content instead of as outer siblings.
   return (
     <View style={styles.container}>
       <ScrollView
+        onScroll={onScroll}
+        scrollEventThrottle={16}
         contentContainerStyle={[
           styles.list,
           isWide && styles.wideList,
-          { paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
+          { paddingTop: insets.top, paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
         ]}
         refreshControl={
           <RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} tintColor={colors.textMuted} />
         }
       >
+        <LargeTitle>Context</LargeTitle>
         <View style={styles.windowRow}>
           {WINDOWS.map((w) => (
             <Pressable key={w} onPress={() => setWindow(w)} style={[styles.chip, window === w && styles.chipActive]}>
@@ -103,6 +105,7 @@ export default function ContextScreen() {
           })
         )}
       </ScrollView>
+      <CollapsingHeaderBar title="Context" scrollY={scrollY} />
     </View>
   );
 }

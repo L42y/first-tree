@@ -14,9 +14,12 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ChatDetailContent } from "~/components/chat-detail";
 import { ChatListItem } from "~/components/chat-list-item";
 import { ChatListSkeleton } from "~/components/chat-list-item-skeleton";
+import { CollapsingHeaderBar, LargeTitle, useCollapsingHeaderScroll } from "~/components/collapsing-header";
+import { QuickActionsButton } from "~/components/quick-actions";
 import { useAuth } from "~/lib/auth-context";
 import { fetchChatRowsPage, renameChat, setChatEngagement } from "~/lib/chats-api";
 import { getItem, setItem } from "~/lib/storage";
@@ -69,6 +72,7 @@ export default function ChatListScreen() {
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
   const tabBarInset = useTabBarFloatingInset();
+  const insets = useSafeAreaInsets();
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const { user, agentId: selfAgentId } = useAuth();
   const [filter, setFilter] = useState<"all" | "unread">("all");
@@ -225,12 +229,18 @@ export default function ChatListScreen() {
     setRefreshing(false);
   }, [refetch]);
 
+  const { scrollY, onScroll } = useCollapsingHeaderScroll((e) => {
+    scrollOffsetMap[`${view}:${filter}`] = e.nativeEvent.contentOffset.y;
+    persistScrollOffsets();
+  });
+
   // The list must be the screen's sole/first native child (react-native-screens
   // walks subview[0] down from the screen root to find the scroll view it
   // ties the large-title collapse animation to) — everything that used to sit
   // above the list as a sibling now rides inside it via ListHeaderComponent.
   const listHeader = (
     <View>
+      <LargeTitle>Chats</LargeTitle>
       <View style={styles.filters}>
         <Pressable onPress={() => setFilter("all")} style={[styles.filter, filter === "all" && styles.filterActive]}>
           <Text style={[styles.filterText, filter === "all" && styles.filterActiveText]}>All</Text>
@@ -282,12 +292,10 @@ export default function ChatListScreen() {
       <FlatList
         ref={listRef}
         data={listItems}
-        onScroll={(e) => {
-          scrollOffsetMap[`${view}:${filter}`] = e.nativeEvent.contentOffset.y;
-          persistScrollOffsets();
-        }}
+        onScroll={onScroll}
+        scrollEventThrottle={16}
         onContentSizeChange={restoreScrollIfPending}
-        contentContainerStyle={{ paddingBottom: tabBarInset }}
+        contentContainerStyle={{ paddingTop: insets.top, paddingBottom: tabBarInset }}
         keyExtractor={(item: ListItem) => item.id}
         renderItem={({ item }: { item: ListItem }) =>
           item.kind === "header" ? (
@@ -313,6 +321,7 @@ export default function ChatListScreen() {
         }}
         onEndReachedThreshold={0.5}
       />
+      <CollapsingHeaderBar title="Chats" scrollY={scrollY} headerRight={<QuickActionsButton />} />
     </View>
   );
 

@@ -1,18 +1,9 @@
-import { colors } from "./theme";
-
 /**
- * Shared native-stack header theming for every (app) tab's own Stack —
- * headerLargeTitle collapses to a small centered title on scroll, the way
- * Apple's own apps do it. iOS-only in effect; other platforms show the
- * title as a plain header and ignore the large-title options.
+ * Every (app) tab's own Stack renders headerless — the large title and its
+ * scroll collapse are hand-rolled (~/components/collapsing-header.tsx)
+ * instead of the native headerLargeTitle, which doesn't track scroll
+ * correctly when nested under NativeTabs on iOS (expo/expo#40717).
  */
 export const nativeHeaderOptions = {
-  headerLargeTitle: true,
-  headerShadowVisible: false,
-  headerLargeTitleShadowVisible: false,
-  headerStyle: { backgroundColor: colors.bg },
-  headerLargeStyle: { backgroundColor: colors.bg },
-  headerTintColor: colors.accent,
-  headerTitleStyle: { color: colors.text },
-  headerLargeTitleStyle: { color: colors.text },
+  headerShown: false,
 } as const;
