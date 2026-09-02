@@ -1,6 +1,6 @@
-import type { ListMeChatsResponse, MeChatRow } from "@first-tree/shared";
+import type { MeChatRow } from "@first-tree/shared";
 import { LegendList } from "@legendapp/list/react-native";
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -17,20 +17,12 @@ import {
 } from "react-native";
 import { ChatDetailContent } from "~/components/chat-detail";
 import { ChatListItem } from "~/components/chat-list-item";
+import { ChatListSkeleton } from "~/components/chat-list-item-skeleton";
 import { useAuth } from "~/lib/auth-context";
-import { fetchChatRows, renameChat, setChatEngagement } from "~/lib/chats-api";
+import { fetchChatRowsPage, renameChat, setChatEngagement } from "~/lib/chats-api";
 import { getItem, setItem } from "~/lib/storage";
 import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
 import { colors } from "~/lib/theme";
-
-const PAGE_SIZE = 50;
-
-function flattenChats(data?: ListMeChatsResponse): MeChatRow[] {
-  if (!data) return [];
-  const pinnedIds = new Set(data.priorityRows.pinned.map((row) => row.chatId));
-  const others = data.rows.filter((row) => !pinnedIds.has(row.chatId));
-  return [...data.priorityRows.pinned, ...others];
-}
 
 // Scroll memory per (view, filter). Held in memory for the fast path and
 // mirrored to storage so the position also survives an app restart — the
@@ -122,24 +114,26 @@ export default function ChatListScreen() {
     restoreScrollIfPending();
   }, [restoreScrollIfPending]);
 
-  const { data, isLoading, error, refetch } = useQuery({
+  const { data, isLoading, error, refetch, fetchNextPage, hasNextPage, isFetchingNextPage } = useInfiniteQuery({
     queryKey: ["me", "chats", "list", filter, view],
-    // Polling refetches produce fresh array identities; without this the
-    // list visibly jumps every interval.
-    placeholderData: keepPreviousData,
-    queryFn: ({ signal }) => fetchChatRows(filter, signal, view),
+    queryFn: ({ pageParam, signal }) => fetchChatRowsPage(filter, pageParam, signal, view),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
 
-  // Render-time guard: a cached array fetched before the page-level
-  // dedupe may still contain repeated chat ids — never hand duplicates to
-  // FlatList.
+  // Cross-page dedupe: a chat can shift pages between requests as its
+  // activity changes, so guard against handing FlatList a duplicate id.
   const rows = useMemo(() => {
     const seen = new Set<string>();
-    return (data ?? []).filter((row) => {
-      if (seen.has(row.chatId)) return false;
-      seen.add(row.chatId);
-      return true;
-    });
+    const out: MeChatRow[] = [];
+    for (const page of data?.pages ?? []) {
+      for (const row of page.rows) {
+        if (seen.has(row.chatId)) continue;
+        seen.add(row.chatId);
+        out.push(row);
+      }
+    }
+    return out;
   }, [data]);
 
   type ListItem = { kind: "header"; id: string; label: string } | { kind: "chat"; id: string; row: MeChatRow };
@@ -272,9 +266,7 @@ export default function ChatListScreen() {
 
   const listEmpty =
     isLoading && !data ? (
-      <View style={styles.center}>
-        <ActivityIndicator />
-      </View>
+      <ChatListSkeleton />
     ) : error ? (
       <View style={styles.errorBox}>
         <Text style={styles.errorText}>{error instanceof Error ? error.message : "Failed to load chats"}</Text>
@@ -285,6 +277,12 @@ export default function ChatListScreen() {
     ) : listItems.length === 0 ? (
       <Text style={styles.empty}>{user?.displayName ? `No chats for ${user.displayName} yet.` : "No chats yet."}</Text>
     ) : null;
+
+  const listFooter = isFetchingNextPage ? (
+    <View style={styles.footer}>
+      <ActivityIndicator color={colors.textMuted} />
+    </View>
+  ) : null;
 
   const listPane = (
     <View style={[styles.container, isWide && styles.listPane]}>
@@ -314,6 +312,14 @@ export default function ChatListScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.textMuted} />}
         ListHeaderComponent={listHeader}
         ListEmptyComponent={listEmpty}
+        ListFooterComponent={listFooter}
+        // Only paginate the unfiltered feed — once the user types a search
+        // query it's scoped to rows already loaded, so pulling in more pages
+        // wouldn't reliably extend those results anyway.
+        onEndReached={() => {
+          if (!search && hasNextPage && !isFetchingNextPage) void fetchNextPage();
+        }}
+        onEndReachedThreshold={0.5}
       />
     </View>
   );
@@ -434,5 +440,8 @@ const styles = StyleSheet.create({
     textAlign: "center",
     opacity: 0.6,
     padding: 24,
+  },
+  footer: {
+    paddingVertical: 20,
   },
 });

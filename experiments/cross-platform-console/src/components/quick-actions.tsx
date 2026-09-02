@@ -1,3 +1,4 @@
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { useMemo, useState } from "react";
@@ -144,14 +145,16 @@ export function QuickActions({ visible, onClose }: { visible: boolean; onClose: 
 /**
  * Self-contained header trigger for the command palette — owns its own
  * open/close state so it can be dropped straight into headerRight (see
- * (app)/index/_layout.tsx) without threading state through the screen.
+ * (app)/index/_layout.tsx) without threading state through the screen. A
+ * plain tinted icon, not a filled pill, to read as a native nav-bar button
+ * rather than an in-content action button transplanted into the header.
  */
 export function QuickActionsButton() {
   const [open, setOpen] = useState(false);
   return (
     <>
       <Pressable onPress={() => setOpen(true)} hitSlop={8} style={styles.quickButton}>
-        <Text style={styles.quickButtonText}>Quick</Text>
+        <Ionicons name="search" size={20} color={colors.accent} />
       </Pressable>
       <QuickActions visible={open} onClose={() => setOpen(false)} />
     </>
@@ -160,15 +163,7 @@ export function QuickActionsButton() {
 
 const styles = StyleSheet.create({
   quickButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: colors.accent,
-  },
-  quickButtonText: {
-    color: colors.accentText,
-    fontWeight: "700",
-    fontSize: 12,
+    padding: 4,
   },
   scrim: {
     flex: 1,

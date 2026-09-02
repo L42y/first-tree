@@ -7,11 +7,7 @@ import type {
   Message,
   SendMessage,
 } from "@first-tree/shared";
-import {
-  chatDetailSchema,
-  listMeChatsResponseSchema,
-  messageSchema,
-} from "@first-tree/shared";
+import { chatDetailSchema, listMeChatsResponseSchema, messageSchema } from "@first-tree/shared";
 import { api, withOrg } from "./api";
 
 export type ListMeChatsQueryInput = Partial<
@@ -50,7 +46,6 @@ export type PaginatedMessages = {
   nextCursor: string | null;
 };
 
-
 export async function listChatMessages(
   chatId: string,
   params?: { limit?: number; cursor?: string },
@@ -60,17 +55,12 @@ export async function listChatMessages(
   if (params?.limit) qs.set("limit", String(params.limit));
   if (params?.cursor) qs.set("cursor", params.cursor);
   const query = qs.toString();
-  return api.get<PaginatedMessages>(
-    `/chats/${encodeURIComponent(chatId)}/messages${query ? `?${query}` : ""}`,
-    { signal },
-  );
+  return api.get<PaginatedMessages>(`/chats/${encodeURIComponent(chatId)}/messages${query ? `?${query}` : ""}`, {
+    signal,
+  });
 }
 
-export async function sendChatMessage(
-  chatId: string,
-  content: string,
-  mentions: string[],
-): Promise<Message> {
+export async function sendChatMessage(chatId: string, content: string, mentions: string[]): Promise<Message> {
   const metadata = mentions.length > 0 ? { mentions } : undefined;
   const body: SendMessage = {
     format: "text",
@@ -85,9 +75,33 @@ export async function markMeChatRead(chatId: string): Promise<void> {
   await api.post(`/chats/${encodeURIComponent(chatId)}/read`);
 }
 
+export type ChatRowsPage = {
+  rows: MeChatRow[];
+  nextCursor: string | null;
+};
+
 /**
- * Full paginated + deduped chat rows for a filter — shared by the Chats
- * screen and the tab-bar unread badge so both see identical data.
+ * One page of chat rows for a filter — used by the Chats screen's infinite
+ * list. Pinned rows are server-attached to every page's response, so they
+ * are only kept on the first page (no cursor yet) to avoid duplicates.
+ */
+export async function fetchChatRowsPage(
+  filter: "all" | "unread",
+  cursor: string | undefined,
+  signal?: AbortSignal,
+  engagement: "active" | "archived" = "active",
+): Promise<ChatRowsPage> {
+  const page = await listMeChats({ limit: 50, cursor, filter, engagement }, { signal });
+  const pinnedIds = new Set(page.priorityRows.pinned.map((row) => row.chatId));
+  const rest = page.rows.filter((row) => !pinnedIds.has(row.chatId));
+  const rows = cursor ? rest : [...page.priorityRows.pinned, ...rest];
+  return { rows, nextCursor: page.nextCursor };
+}
+
+/**
+ * Full paginated + deduped chat rows for a filter — shared by the tab-bar
+ * unread badge, Attention, and Quick Actions, which all need the complete
+ * set (badge counts, cross-chat search) rather than an incremental page.
  */
 export async function fetchChatRows(
   filter: "all" | "unread",
@@ -98,10 +112,7 @@ export async function fetchChatRows(
   const seen = new Set<string>();
   let cursor: string | null = null;
   do {
-    const page = await listMeChats(
-      { limit: 50, cursor: cursor ?? undefined, filter, engagement },
-      { signal },
-    );
+    const page = await listMeChats({ limit: 50, cursor: cursor ?? undefined, filter, engagement }, { signal });
     const pinnedIds = new Set(page.priorityRows.pinned.map((row) => row.chatId));
     const ordered = [...page.priorityRows.pinned, ...page.rows.filter((row) => !pinnedIds.has(row.chatId))];
     for (const row of ordered) {
@@ -118,10 +129,7 @@ export async function fetchChatRows(
  * Start a task chat with an agent — mirrors the web console's
  * `createMeTaskChat` body (POST {withOrg}/chats).
  */
-export async function createTaskChat(
-  recipientAgentId: string,
-  message: string,
-): Promise<{ chatId: string }> {
+export async function createTaskChat(recipientAgentId: string, message: string): Promise<{ chatId: string }> {
   return api.post<{ chatId: string }>(withOrg("/chats"), {
     mode: "task",
     initialRecipientAgentIds: [recipientAgentId],
@@ -142,9 +150,6 @@ export async function renameChat(chatId: string, topic: string): Promise<void> {
 }
 
 /** Archive or restore a chat (`POST /chats/:id/engagement`). */
-export async function setChatEngagement(
-  chatId: string,
-  status: "active" | "archived" | "deleted",
-): Promise<void> {
+export async function setChatEngagement(chatId: string, status: "active" | "archived" | "deleted"): Promise<void> {
   await api.post(`/chats/${encodeURIComponent(chatId)}/engagement`, { status });
 }
