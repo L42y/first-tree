@@ -901,8 +901,9 @@ describe("probeCapabilities (aggregator)", () => {
     latencyMs: 1,
   });
 
-  it("probes only the enabled providers (claude-code-tui is temporarily disabled, never invoked)", async () => {
+  it("probes only the enabled providers (disabled providers are never invoked)", async () => {
     const tuiProbe = vi.fn().mockResolvedValue(fakeEntry("missing"));
+    const antigravityProbe = vi.fn().mockResolvedValue(fakeEntry("missing"));
     const okProbe = vi.fn().mockResolvedValue(fakeEntry("ok"));
     const probes = {
       amp: okProbe,
@@ -912,6 +913,7 @@ describe("probeCapabilities (aggregator)", () => {
       codex: okProbe,
       cursor: okProbe,
       grok: okProbe,
+      antigravity: antigravityProbe,
       "kimi-code": okProbe,
       opencode: okProbe,
       pi: okProbe,
@@ -921,8 +923,8 @@ describe("probeCapabilities (aggregator)", () => {
     const { probeCapabilities } = await import("../providers/capabilities/index.js");
     const caps = await probeCapabilities({ probes });
 
-    // claude-code-tui is in DISABLED_RUNTIME_PROVIDERS — it is skipped, so it
-    // gets no capability entry AND its probe is never called (no binary spawn).
+    // Disabled providers are skipped, so they get no capability entry AND
+    // their probes are never called (no binary spawn).
     expect(Object.keys(caps).sort()).toEqual([
       "amp",
       "claude-code",
@@ -937,7 +939,9 @@ describe("probeCapabilities (aggregator)", () => {
     ]);
     expect(caps["claude-code"]?.state).toBe("ok");
     expect(caps["claude-code-tui"]).toBeUndefined();
+    expect(caps.antigravity).toBeUndefined();
     expect(tuiProbe).not.toHaveBeenCalled();
+    expect(antigravityProbe).not.toHaveBeenCalled();
     expect(okProbe).toHaveBeenCalledTimes(10);
   }, 15_000);
 
@@ -962,6 +966,7 @@ describe("probeCapabilities (aggregator)", () => {
       codex: vi.fn().mockRejectedValue("codex probe failed"),
       cursor: vi.fn().mockRejectedValue("cursor probe failed"),
       grok: vi.fn().mockRejectedValue("grok probe failed"),
+      antigravity: vi.fn().mockRejectedValue("antigravity probe failed"),
       "kimi-code": vi.fn().mockRejectedValue("kimi probe failed"),
       opencode: vi.fn().mockRejectedValue("opencode probe failed"),
       pi: vi.fn().mockRejectedValue("pi probe failed"),
@@ -985,9 +990,11 @@ describe("probeCapabilities (aggregator)", () => {
     expect(caps.opencode).toMatchObject({ state: "error", error: "opencode probe failed" });
     expect(caps.pi).toMatchObject({ state: "error", error: "pi probe failed" });
     expect(caps.zcode).toMatchObject({ state: "error", error: "zcode probe failed" });
-    // Disabled provider is never probed, so no entry (not even an error one).
+    // Disabled providers are never probed, so no entry (not even an error one).
     expect(caps["claude-code-tui"]).toBeUndefined();
+    expect(caps.antigravity).toBeUndefined();
     expect(probes["claude-code-tui"]).not.toHaveBeenCalled();
+    expect(probes.antigravity).not.toHaveBeenCalled();
   });
 
   it("publishes stable provider order when probes settle in reverse", async () => {
@@ -1044,6 +1051,7 @@ describe("probeCapabilities (aggregator)", () => {
       codex: vi.fn().mockRejectedValue(new Error("only codex")),
       cursor: ok,
       grok: ok,
+      antigravity: ok,
       "kimi-code": ok,
       opencode: ok,
       pi: ok,
