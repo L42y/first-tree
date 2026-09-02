@@ -1,3 +1,4 @@
+import Ionicons from "@expo/vector-icons/Ionicons";
 import type { MeChatRow } from "@first-tree/shared";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -242,18 +243,6 @@ export default function ChatListScreen() {
   const listHeader = (
     <View>
       <LargeTitle scrollY={scrollY}>Chats</LargeTitle>
-      <View style={styles.filters}>
-        <Pressable onPress={() => setFilter("all")} style={[styles.filter, filter === "all" && styles.filterActive]}>
-          <Text style={[styles.filterText, filter === "all" && styles.filterActiveText]}>All</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => setFilter("unread")}
-          style={[styles.filter, filter === "unread" && styles.filterActive]}
-        >
-          <Text style={[styles.filterText, filter === "unread" && styles.filterActiveText]}>Unread</Text>
-        </Pressable>
-      </View>
-
       {(rows.length > 0 || search.length > 0) && (
         <TextInput
           style={styles.search}
@@ -322,7 +311,32 @@ export default function ChatListScreen() {
         }}
         onEndReachedThreshold={0.5}
       />
-      <CollapsingHeaderBar title="Chats" scrollY={scrollY} headerRight={<QuickActionsButton />} />
+      <CollapsingHeaderBar
+        title="Chats"
+        scrollY={scrollY}
+        headerRight={
+          <View style={styles.headerButtons}>
+            {/* Filter toggle lives in the bar (next to search) rather than as
+                in-content chips, so it stays reachable once the list header
+                has scrolled away. Filled funnel = Unread, outline = All. */}
+            <Pressable
+              onPress={() => setFilter(filter === "unread" ? "all" : "unread")}
+              hitSlop={8}
+              style={styles.headerButton}
+              accessibilityRole="button"
+              accessibilityLabel={filter === "unread" ? "Showing unread chats, tap to show all" : "Filter unread chats"}
+              accessibilityState={{ selected: filter === "unread" }}
+            >
+              <Ionicons
+                name={filter === "unread" ? "funnel" : "funnel-outline"}
+                size={20}
+                color={colors.accent}
+              />
+            </Pressable>
+            <QuickActionsButton />
+          </View>
+        }
+      />
     </View>
   );
 
@@ -393,27 +407,13 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 15,
   },
-  filters: {
+  headerButtons: {
     flexDirection: "row",
-    padding: 8,
-    gap: 8,
-  },
-  filter: {
-    flex: 1,
-    paddingVertical: 8,
     alignItems: "center",
-    borderRadius: 8,
-    backgroundColor: colors.surface,
+    gap: 12,
   },
-  filterActive: {
-    backgroundColor: colors.accent,
-  },
-  filterText: {
-    color: colors.text,
-  },
-  filterActiveText: {
-    color: colors.accentText,
-    fontWeight: "bold",
+  headerButton: {
+    padding: 4,
   },
   center: {
     flex: 1,
