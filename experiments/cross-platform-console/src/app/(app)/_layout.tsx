@@ -1,6 +1,6 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { Redirect, Tabs, usePathname } from "expo-router";
+import { Redirect, Tabs } from "expo-router";
 import type { ColorValue } from "react-native";
 import { ActivityIndicator, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { useTheme } from "tamagui";
@@ -25,15 +25,11 @@ const tabIcon =
  * tablet/desktop/wide screens (>= 1024pt) — one layout for every surface.
  */
 export default function AppLayout() {
-  const pathname = usePathname();
   const { isAuthenticated, meLoaded } = useAuth();
   useOrgRealtime(meLoaded && isAuthenticated);
   const theme = useTheme();
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
-  // Chat detail owns the full vertical run so keyboard avoidance does not
-  // stack on top of an empty bottom tab bar.
-  const isChatDetail = /^\/chat\/[^/]+$/.test(pathname);
 
   // Attention badge source for the Chats tab — hooks stay unconditional;
   // fetching is gated on the session instead.
@@ -74,7 +70,6 @@ export default function AppLayout() {
           tabBarStyle: {
             backgroundColor: colors.bg,
             borderTopColor: colors.border,
-            ...(isChatDetail && !isWide ? { display: "none" } : {}),
             ...(isWide ? { borderRightWidth: StyleSheet.hairlineWidth, borderTopWidth: 0 } : {}),
           },
         }}
@@ -96,15 +91,12 @@ export default function AppLayout() {
           name="docs"
           options={{ title: "Docs", tabBarIcon: tabIcon("document-text-outline", "document-text") }}
         />
-        <Tabs.Screen name="agent/new" options={{ href: null }} />
-        <Tabs.Screen name="agent/[uuid]" options={{ href: null }} />
         <Tabs.Screen name="attention" options={{ href: null }} />
         <Tabs.Screen name="repos" options={{ href: null }} />
         <Tabs.Screen
           name="settings"
           options={{ title: "Settings", tabBarIcon: tabIcon("settings-outline", "settings") }}
         />
-        <Tabs.Screen name="chat/[chatId]" options={{ href: null }} />
       </Tabs>
     </View>
   );

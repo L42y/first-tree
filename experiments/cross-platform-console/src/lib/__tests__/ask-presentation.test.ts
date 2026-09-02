@@ -33,6 +33,24 @@ describe("buildAskPresentation", () => {
     expect(presentation.hasMore).toBe(false);
   });
 
+  it("extracts the final direct question instead of the long paragraph containing one", () => {
+    const content = [
+      "The first diagnostic asks: does the monitor have data? It found no capture.",
+      "",
+      "I have not reviewed the prerequisite yet and will not endorse it as the fix.",
+      "",
+      "Question: Will you allow me to use the upstream token for the bounded retry?",
+      "",
+      "My recommendation: use a dedicated token and keep the batch small.",
+    ].join("\n");
+
+    const presentation = buildAskPresentation(content);
+
+    expect(presentation.decision).toBe("Will you allow me to use the upstream token for the bounded retry?");
+    expect(presentation.recommendation).toBe("use a dedicated token and keep the batch small.");
+    expect(presentation.hasMore).toBe(true);
+  });
+
   it("keeps an empty body renderable", () => {
     expect(buildAskPresentation("")).toEqual({
       decision: "",

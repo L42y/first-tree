@@ -2,7 +2,7 @@ import type { Message } from "@first-tree/shared";
 import { type AskRequest, askRequestSchema } from "@first-tree/shared";
 import { api } from "./api";
 
-export const ASK_MODAL_ROUTE = "/chat/[chatId]/ask/[requestId]" as const;
+export const ASK_MODAL_ROUTE = "/ask/[requestId]" as const;
 
 /**
  * "Ask user" support (format="request").

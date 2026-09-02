@@ -1,13 +1,21 @@
-import { useMemo, useState } from "react";
-import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
-import { Pressable, useWindowDimensions } from "react-native";
 import { useRouter } from "expo-router";
+import { useMemo, useState } from "react";
+import {
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
 
-import type { ManagedAgent } from "~/lib/team-api";
 import { AgentDetailContent } from "~/components/agent-detail";
-import { listManagedAgents } from "~/lib/team-api";
 import { Avatar } from "~/components/avatar";
+import type { ManagedAgent } from "~/lib/team-api";
+import { listManagedAgents } from "~/lib/team-api";
 import { colors } from "~/lib/theme";
 
 /**
@@ -81,13 +89,16 @@ export default function TeamScreen() {
               {item.agents.map((agent) => (
                 <Pressable
                   key={agent.uuid}
-                  onPress={() =>
+                  onPress={() => {
+                    if (isWide) {
+                      setSelected({ uuid: agent.uuid, provider: agent.runtimeProvider ?? "" });
+                      return;
+                    }
                     router.push({
-                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                      pathname: `/agent/${agent.uuid}` as any,
+                      pathname: `/agent/${agent.uuid}`,
                       params: { provider: agent.runtimeProvider ?? "" },
-                    })
-                  }
+                    } as never);
+                  }}
                   style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
                 >
                   <Avatar

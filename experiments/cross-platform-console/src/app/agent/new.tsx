@@ -1,16 +1,8 @@
+import { Redirect, router } from "expo-router";
 import { useState } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
-import { router } from "expo-router";
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
+import { useAuth } from "~/lib/auth-context";
 import type { CreateAgentInput } from "~/lib/team-api";
 import { createAgent } from "~/lib/team-api";
 import { colors } from "~/lib/theme";
@@ -32,6 +24,7 @@ function suggestName(displayName: string): string {
  * sends). Human mirrors are lifecycle-managed and not creatable here.
  */
 export default function NewAgentScreen() {
+  const { isAuthenticated, meLoaded } = useAuth();
   const [displayName, setDisplayName] = useState("");
   const [name, setName] = useState("");
   const [nameEdited, setNameEdited] = useState(false);
@@ -54,13 +47,19 @@ export default function NewAgentScreen() {
       const created = await createAgent(input);
       router.replace(`/agent/${created.uuid}`);
     } catch (err) {
-      Alert.alert(
-        "Couldn't create agent",
-        err instanceof Error ? err.message : "Unexpected error. Try again.",
-      );
+      Alert.alert("Couldn't create agent", err instanceof Error ? err.message : "Unexpected error. Try again.");
       setSaving(false);
     }
   };
+
+  if (!meLoaded) {
+    return (
+      <View style={styles.loading}>
+        <ActivityIndicator color={colors.accent} />
+      </View>
+    );
+  }
+  if (!isAuthenticated) return <Redirect href="/login" />;
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -96,9 +95,7 @@ export default function NewAgentScreen() {
         />
       </View>
       {!NAME_RE.test(effectiveName) && (
-        <Text style={styles.hint}>
-          Lowercase letters, digits, hyphens, underscores. Starts with a letter or digit.
-        </Text>
+        <Text style={styles.hint}>Lowercase letters, digits, hyphens, underscores. Starts with a letter or digit.</Text>
       )}
 
       <Text style={styles.label}>Visibility</Text>
@@ -230,5 +227,11 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.75,
+  },
+  loading: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.bg,
   },
 });

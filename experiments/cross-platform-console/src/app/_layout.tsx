@@ -43,17 +43,43 @@ export default function RootLayout() {
               <Stack.Screen name="login" />
               <Stack.Screen name="(app)" />
               <Stack.Screen
-                name="chat/[chatId]/ask/[requestId]"
+                name="chat/[chatId]"
+                options={{
+                  headerShown: false,
+                  contentStyle: { backgroundColor: colors.bg },
+                  gestureEnabled: true,
+                  fullScreenGestureEnabled: true,
+                }}
+              />
+              <Stack.Screen
+                name="agent/[uuid]"
+                options={{
+                  headerShown: false,
+                  contentStyle: { backgroundColor: colors.bg },
+                  gestureEnabled: true,
+                  fullScreenGestureEnabled: true,
+                }}
+              />
+              <Stack.Screen
+                name="agent/new"
+                options={{
+                  headerShown: false,
+                  contentStyle: { backgroundColor: colors.bg },
+                  gestureEnabled: true,
+                }}
+              />
+              <Stack.Screen
+                name="ask/[requestId]"
                 options={{
                   presentation: "formSheet",
                   headerShown: false,
                   contentStyle: { backgroundColor: colors.bg },
-                  gestureEnabled: true,
                   sheetAllowedDetents: [0.5, 1],
                   sheetInitialDetentIndex: 0,
                   sheetGrabberVisible: true,
                   sheetCornerRadius: 24,
                   sheetLargestUndimmedDetentIndex: "none",
+                  gestureEnabled: true,
                 }}
               />
             </Stack>

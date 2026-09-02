@@ -63,6 +63,41 @@ function cleanLabeledParagraph(paragraph: string, labels: string[]): string {
   return isRequestedLabel ? match[2].replace(/^\s*(?:\*\*|__)\s*/, "").trim() : paragraph;
 }
 
+function proseSentences(value: string): string[] {
+  return value
+    .split(/(?:\n+|(?<=[.!?])\s+)(?=[A-Z0-9*_[`"'“-])/)
+    .map((sentence) => sentence.replace(/^\s*(?:[-•]\s*|\d+\.\s*)/, "").trim())
+    .filter(Boolean);
+}
+
+function compactProse(value: string, maxCharacters = 260): string {
+  const source = value.trim();
+  if (source.length <= maxCharacters) return source;
+
+  let compact = "";
+  for (const sentence of proseSentences(source)) {
+    const candidate = compact ? `${compact} ${sentence}` : sentence;
+    if (candidate.length > maxCharacters) break;
+    compact = candidate;
+  }
+  if (compact) return compact;
+
+  const clipped = source.slice(0, maxCharacters);
+  const lastSpace = clipped.lastIndexOf(" ");
+  return `${(lastSpace > maxCharacters * 0.6 ? clipped.slice(0, lastSpace) : clipped).trim()}…`;
+}
+
+function directQuestion(source: string): string {
+  const candidates = proseSentences(source).filter((sentence) => sentence.includes("?"));
+  const question = candidates.at(-1);
+  if (!question) return "";
+  return question
+    .replace(/^\s*(?:#{1,6}\s*)?(?:[-•]\s*)?/, "")
+    .replace(/^(?:\*\*|__)?\s*(?:question|decision needed|next step)\s*(?:\*\*|__)?\s*[:：]\s*/i, "")
+    .replace(/^@\S+\s+/, "")
+    .trim();
+}
+
 function matches(paragraph: string, labels: string[]): boolean {
   const label = paragraphLabel(paragraph);
   return labels.some((candidate) => label === candidate || label.startsWith(`${candidate} `));
@@ -85,10 +120,14 @@ export function buildAskPresentation(content: string): AskPresentation {
   const reserved = new Set([...decisionSections, ...recommendationSections]);
   const contextSections = sections.filter((section) => !reserved.has(section) && matches(section, CONTEXT_LABELS));
 
-  let decision = decisionSections.map((section) => cleanLabeledParagraph(section, DECISION_LABELS)).join("\n\n");
-  if (!decision) {
-    decision = sections.find((section) => section.includes("?")) ?? sections[sections.length - 1];
-  }
+  const labeledDecision = decisionSections
+    .map((section) => cleanLabeledParagraph(section, DECISION_LABELS))
+    .join("\n\n")
+    .trim();
+  const decision =
+    directQuestion(labeledDecision) ||
+    directQuestion(source) ||
+    compactProse((labeledDecision || sections.at(-1)) ?? "", 180);
 
   const summaryParts = new Set([decision, ...recommendationSections]);
   const hasMore = sections.some((section) => !summaryParts.has(section));
@@ -99,6 +138,7 @@ export function buildAskPresentation(content: string): AskPresentation {
       recommendationSections.length > 0
         ? recommendationSections
             .map((section) => cleanLabeledParagraph(section, [...RECOMMENDATION_LABELS, ...CHOICE_LABELS]))
+            .map((section) => compactProse(section, 260))
             .join("\n\n")
         : null,
     context: contextSections,
