@@ -1,5 +1,6 @@
 import type {
   ChatDetail,
+  ChatTokenUsage,
   ListMeChatsQuery,
   ListMeChatsResponse,
   MeChatRow,
@@ -37,6 +38,11 @@ export async function listMeChats(
 export async function getChat(chatId: string): Promise<ChatDetail> {
   const res = await api.get<unknown>(`/chats/${encodeURIComponent(chatId)}`);
   return chatDetailSchema.parse(res);
+}
+
+/** Cumulative model usage for a chat; wide-screen surfaces render this compactly. */
+export async function getChatTokenUsage(chatId: string): Promise<ChatTokenUsage> {
+  return api.get<ChatTokenUsage>(`/chats/${encodeURIComponent(chatId)}/token-usage`);
 }
 
 export type PaginatedMessages = {

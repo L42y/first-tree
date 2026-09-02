@@ -4,6 +4,7 @@ import { Stack, usePathname } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import * as SystemUI from "expo-system-ui";
 import { useEffect } from "react";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { TamaguiProvider, Theme } from "tamagui";
 import { TeamSwitchOverlay } from "~/components/team-switcher";
 import { AuthProvider } from "~/lib/auth-context";
@@ -36,58 +37,60 @@ export default function RootLayout() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <TamaguiProvider config={config} defaultTheme={themeName}>
-        <Theme name={themeName}>
-          <AuthProvider>
-            <Stack screenOptions={{ headerShown: false }}>
-              <Stack.Screen name="login" />
-              <Stack.Screen name="(app)" />
-              <Stack.Screen
-                name="chat/[chatId]"
-                options={{
-                  headerShown: false,
-                  contentStyle: { backgroundColor: colors.bg },
-                  gestureEnabled: true,
-                  fullScreenGestureEnabled: true,
-                }}
-              />
-              <Stack.Screen
-                name="agent/[uuid]"
-                options={{
-                  headerShown: false,
-                  contentStyle: { backgroundColor: colors.bg },
-                  gestureEnabled: true,
-                  fullScreenGestureEnabled: true,
-                }}
-              />
-              <Stack.Screen
-                name="agent/new"
-                options={{
-                  headerShown: false,
-                  contentStyle: { backgroundColor: colors.bg },
-                  gestureEnabled: true,
-                }}
-              />
-              <Stack.Screen
-                name="ask/[requestId]"
-                options={{
-                  presentation: "formSheet",
-                  headerShown: false,
-                  contentStyle: { backgroundColor: colors.bg },
-                  sheetAllowedDetents: [0.5, 1],
-                  sheetInitialDetentIndex: 0,
-                  sheetGrabberVisible: true,
-                  sheetCornerRadius: 24,
-                  sheetLargestUndimmedDetentIndex: "none",
-                  gestureEnabled: true,
-                }}
-              />
-            </Stack>
-            <TeamSwitchOverlay />
-            <StatusBar style={themeName === "dark" ? "light" : "dark"} />
-          </AuthProvider>
-        </Theme>
-      </TamaguiProvider>
+      <SafeAreaProvider>
+        <TamaguiProvider config={config} defaultTheme={themeName}>
+          <Theme name={themeName}>
+            <AuthProvider>
+              <Stack screenOptions={{ headerShown: false }}>
+                <Stack.Screen name="login" />
+                <Stack.Screen name="(app)" />
+                <Stack.Screen
+                  name="chat/[chatId]"
+                  options={{
+                    headerShown: false,
+                    contentStyle: { backgroundColor: colors.bg },
+                    gestureEnabled: true,
+                    fullScreenGestureEnabled: true,
+                  }}
+                />
+                <Stack.Screen
+                  name="agent/[uuid]"
+                  options={{
+                    headerShown: false,
+                    contentStyle: { backgroundColor: colors.bg },
+                    gestureEnabled: true,
+                    fullScreenGestureEnabled: true,
+                  }}
+                />
+                <Stack.Screen
+                  name="agent/new"
+                  options={{
+                    headerShown: false,
+                    contentStyle: { backgroundColor: colors.bg },
+                    gestureEnabled: true,
+                  }}
+                />
+                <Stack.Screen
+                  name="ask/[requestId]"
+                  options={{
+                    presentation: "formSheet",
+                    headerShown: false,
+                    contentStyle: { backgroundColor: colors.bg },
+                    sheetAllowedDetents: [0.5, 1],
+                    sheetInitialDetentIndex: 0,
+                    sheetGrabberVisible: true,
+                    sheetCornerRadius: 24,
+                    sheetLargestUndimmedDetentIndex: "none",
+                    gestureEnabled: true,
+                  }}
+                />
+              </Stack>
+              <TeamSwitchOverlay />
+              <StatusBar style={themeName === "dark" ? "light" : "dark"} />
+            </AuthProvider>
+          </Theme>
+        </TamaguiProvider>
+      </SafeAreaProvider>
     </QueryClientProvider>
   );
 }

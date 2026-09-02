@@ -1,7 +1,9 @@
-import type { ChatDetail, MeChatRow, Message } from "@first-tree/shared";
+import type { ChatDetail, ChatTokenUsage, MeChatRow, Message } from "@first-tree/shared";
 import { extractMentions } from "@first-tree/shared";
 import { type InfiniteData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { GlassViewProps } from "expo-glass-effect";
 import { usePathname, useRouter } from "expo-router";
+import type { ComponentType } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -12,9 +14,11 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
   type ViewToken,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Avatar } from "~/components/avatar";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
 import { LiveMarkdownInput, type LiveMarkdownInputHandle } from "~/components/live-markdown-input";
@@ -31,7 +35,14 @@ import {
   getChatReadState,
   saveChatReadState,
 } from "~/lib/chat-read-state";
-import { getChat, listChatMessages, markMeChatRead, type PaginatedMessages, sendChatMessage } from "~/lib/chats-api";
+import {
+  getChat,
+  getChatTokenUsage,
+  listChatMessages,
+  markMeChatRead,
+  type PaginatedMessages,
+  sendChatMessage,
+} from "~/lib/chats-api";
 import {
   buildMentionCandidates,
   buildMentionInsert,
@@ -43,6 +54,7 @@ import {
   shouldPrimeMentionOnFocus,
 } from "~/lib/mentions";
 import { colors } from "~/lib/theme";
+import { formatTokenCount, processedTokenCount } from "~/lib/token-usage";
 
 const PAGE_SIZE = 50;
 
@@ -51,6 +63,27 @@ type TimelineItem =
   | { kind: "divider"; key: string; count: number };
 
 type MessagesCache = InfiniteData<PaginatedMessages, string | undefined>;
+
+type LiquidGlassModule = {
+  GlassView: ComponentType<GlassViewProps>;
+  isGlassEffectAPIAvailable?: () => boolean;
+  isLiquidGlassAvailable?: () => boolean;
+};
+
+/**
+ * Resolve Liquid Glass lazily so an older dev client without the native module
+ * falls back to an opaque card instead of crashing while its JS is reloaded.
+ */
+function loadLiquidGlass(): LiquidGlassModule | null {
+  if (Platform.OS !== "ios") return null;
+  try {
+    const glass = require("expo-glass-effect") as LiquidGlassModule;
+    if (!glass.isGlassEffectAPIAvailable?.() || !glass.isLiquidGlassAvailable?.()) return null;
+    return glass;
+  } catch {
+    return null;
+  }
+}
 
 function patchFirstMessagePage(
   previous: MessagesCache | undefined,
@@ -75,6 +108,8 @@ export function ChatDetailContent({
 }) {
   const router = useRouter();
   const pathname = usePathname();
+  const { width: windowWidth } = useWindowDimensions();
+  const safeAreaInsets = useSafeAreaInsets();
   const { user, memberId, agentId: selfAgentId } = useAuth();
   const queryClient = useQueryClient();
   const listRef = useRef<FlatList<TimelineItem>>(null);
@@ -98,11 +133,15 @@ export function ChatDetailContent({
   const [caret, setCaret] = useState(0);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [composerFooterHeight, setComposerFooterHeight] = useState(0);
   // Deterministic keyboard avoidance: lift the composer by the exact
   // keyboard height. Framework avoidance (KeyboardAvoidingView /
   // automaticallyAdjustKeyboardInsets) mis-measured or left the composer
   // behind the keyboard on iOS.
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const scrollOffsetRef = useRef(0);
+  const listHeightRef = useRef(0);
+  const messageLayoutsRef = useRef(new Map<string, { y: number; height: number }>());
   useEffect(() => {
     if (Platform.OS !== "ios") return;
     const showSub = Keyboard.addListener("keyboardDidShow", (e) => setKeyboardHeight(e.endCoordinates.height));
@@ -112,6 +151,16 @@ export function ChatDetailContent({
       hideSub.remove();
     };
   }, []);
+
+  const liquidGlass = useMemo(loadLiquidGlass, []);
+  const showTokenUsage = windowWidth >= 1024;
+  const tokenUsageQuery = useQuery<ChatTokenUsage>({
+    queryKey: ["chats", chatId, "token-usage"],
+    queryFn: () => getChatTokenUsage(chatId),
+    enabled: showTokenUsage,
+    refetchInterval: 60_000,
+  });
+  const processedTokens = tokenUsageQuery.data ? processedTokenCount(tokenUsageQuery.data) : 0;
 
   const chatQuery = useQuery<ChatDetail>({
     queryKey: ["chats", chatId],
@@ -329,6 +378,10 @@ export function ChatDetailContent({
 
   const openAskId = openAsk?.message.id ?? null;
   const askModalVisible = pathname.includes("/ask/");
+  // The glass composer overlays the final messages. Read-state stays based on
+  // the area actually exposed above it, not the full FlatList viewport.
+  const composerReserve = openAsk ? 0 : composerFooterHeight + keyboardHeight;
+  const ComposerSurface = liquidGlass?.GlassView;
 
   // Speaker-only chat roster. Routing uses immutable canonical names; the
   // display label is only for the picker row.
@@ -539,12 +592,18 @@ export function ChatDetailContent({
 
   const handleViewableItemsChanged = useCallback(
     ({ viewableItems }: { viewableItems: ViewToken[] }) => {
-      const bottom = viewableItems
-        .filter((token) => token.isViewable)
-        .reduce<(typeof viewableItems)[number] | null>((latest, token) => {
-          if (!latest || (token.index ?? -1) > (latest.index ?? -1)) return token;
-          return latest;
-        }, null);
+      const exposedBottom = scrollOffsetRef.current + listHeightRef.current - composerReserve;
+      const isExposed = (token: ViewToken) => {
+        if (!token.isViewable) return false;
+        const layout = messageLayoutsRef.current.get(token.key);
+        if (!layout) return true;
+        const exposedHeight = Math.max(0, Math.min(layout.height, exposedBottom - layout.y));
+        return exposedHeight / layout.height >= 0.98;
+      };
+      const bottom = viewableItems.filter(isExposed).reduce<(typeof viewableItems)[number] | null>((latest, token) => {
+        if (!latest || (token.index ?? -1) > (latest.index ?? -1)) return token;
+        return latest;
+      }, null);
       const messageId =
         bottom?.item && typeof bottom.item === "object" && "id" in bottom.item
           ? String((bottom.item as { id: unknown }).id)
@@ -560,7 +619,7 @@ export function ChatDetailContent({
       });
       scheduleReadStateSave();
     },
-    [messages, scheduleReadStateSave],
+    [composerReserve, messages, scheduleReadStateSave],
   );
 
   return (
@@ -608,6 +667,7 @@ export function ChatDetailContent({
 
       <FlatList
         ref={listRef}
+        style={styles.timeline}
         data={timeline}
         keyExtractor={(item) => item.key}
         maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
@@ -638,7 +698,13 @@ export function ChatDetailContent({
           return askModalVisible && itemMessage.id === openAskId ? (
             <View style={styles.hiddenModalMessage}>{messageView}</View>
           ) : (
-            messageView
+            <View
+              onLayout={({ nativeEvent: { layout } }) => {
+                messageLayoutsRef.current.set(item.key, { y: layout.y, height: layout.height });
+              }}
+            >
+              {messageView}
+            </View>
           );
         }}
         onStartReached={() => {
@@ -647,7 +713,14 @@ export function ChatDetailContent({
           }
         }}
         onEndReachedThreshold={0.5}
-        contentContainerStyle={styles.messages}
+        contentContainerStyle={[styles.messages, { paddingBottom: Math.max(8, composerReserve + 12) }]}
+        scrollEventThrottle={16}
+        onScroll={({ nativeEvent: { contentOffset } }) => {
+          scrollOffsetRef.current = contentOffset.y;
+        }}
+        onLayout={({ nativeEvent: { layout } }) => {
+          listHeightRef.current = layout.height;
+        }}
         onScrollBeginDrag={() => {
           // The reader taking over ends the follow-the-bottom behaviour until
           // they send something or reopen the chat.
@@ -680,13 +753,21 @@ export function ChatDetailContent({
       )}
 
       {!openAsk && (
-        <>
+        <View
+          style={[styles.composerFooter, { paddingBottom: keyboardHeight > 0 ? 0 : safeAreaInsets.bottom }]}
+          onLayout={({ nativeEvent: { layout } }) => {
+            setComposerFooterHeight((previous) =>
+              Math.abs(previous - layout.height) < 0.5 ? previous : layout.height,
+            );
+          }}
+        >
           {sendError && (
-            <Text style={styles.sendError} numberOfLines={2}>
-              Couldn't send: {sendError}
-            </Text>
+            <View style={styles.composerNotice}>
+              <Text style={styles.sendError} numberOfLines={2}>
+                Couldn't send: {sendError}
+              </Text>
+            </View>
           )}
-          {sendBlockedByMentionGate && <Text style={styles.mentionHint}>In a group, @mention who this is for</Text>}
           {activeMentionTrigger && visibleMentionCandidates.length > 0 && (
             <View style={styles.mentionPicker}>
               <ScrollView
@@ -714,33 +795,78 @@ export function ChatDetailContent({
               </ScrollView>
             </View>
           )}
-          <View style={[styles.composer, keyboardHeight > 0 && { marginBottom: keyboardHeight }]}>
-            <LiveMarkdownInput
-              ref={composerRef}
-              style={styles.inputContainer}
-              value={message}
-              onChangeText={setMessage}
-              onSelectionChange={({ nativeEvent: { selection } }) => setCaret(selection.start)}
-              onFocus={handleComposerFocus}
-              placeholder={
-                selfOnlyRoster
-                  ? "Add a participant to send a message"
-                  : requiresMention
-                    ? "In a group, @mention who this is for"
-                    : "Message…"
-              }
-              multiline
-              maxLength={4000}
-              returnKeyType="send"
-              submitBehavior="submit"
-              onSubmitEditing={() => {
-                const first = visibleMentionCandidates[0];
-                if (activeMentionTrigger && first) applyMentionPick(first);
-                else void handleSend();
-              }}
-            />
-          </View>
-        </>
+          {ComposerSurface ? (
+            <ComposerSurface
+              style={styles.glassComposerCard}
+              glassEffectStyle="regular"
+              tintColor={colors.bg}
+              colorScheme="dark"
+              isInteractive
+            >
+              {showTokenUsage && processedTokens > 0 && (
+                <Text style={styles.tokenUsage}>{formatTokenCount(processedTokens)} processed tokens in this chat</Text>
+              )}
+              <View style={styles.composer}>
+                <LiveMarkdownInput
+                  ref={composerRef}
+                  style={styles.glassInputContainer}
+                  value={message}
+                  onChangeText={setMessage}
+                  onSelectionChange={({ nativeEvent: { selection } }) => setCaret(selection.start)}
+                  onFocus={handleComposerFocus}
+                  placeholder={
+                    selfOnlyRoster
+                      ? "Add a participant to send a message"
+                      : requiresMention
+                        ? "In a group, @mention who this is for"
+                        : "Message…"
+                  }
+                  multiline
+                  maxLength={4000}
+                  returnKeyType="send"
+                  submitBehavior="submit"
+                  onSubmitEditing={() => {
+                    const first = visibleMentionCandidates[0];
+                    if (activeMentionTrigger && first) applyMentionPick(first);
+                    else void handleSend();
+                  }}
+                />
+              </View>
+            </ComposerSurface>
+          ) : (
+            <View style={styles.composerCard}>
+              {showTokenUsage && processedTokens > 0 && (
+                <Text style={styles.tokenUsage}>{formatTokenCount(processedTokens)} processed tokens in this chat</Text>
+              )}
+              <View style={styles.composer}>
+                <LiveMarkdownInput
+                  ref={composerRef}
+                  style={styles.inputContainer}
+                  value={message}
+                  onChangeText={setMessage}
+                  onSelectionChange={({ nativeEvent: { selection } }) => setCaret(selection.start)}
+                  onFocus={handleComposerFocus}
+                  placeholder={
+                    selfOnlyRoster
+                      ? "Add a participant to send a message"
+                      : requiresMention
+                        ? "In a group, @mention who this is for"
+                        : "Message…"
+                  }
+                  multiline
+                  maxLength={4000}
+                  returnKeyType="send"
+                  submitBehavior="submit"
+                  onSubmitEditing={() => {
+                    const first = visibleMentionCandidates[0];
+                    if (activeMentionTrigger && first) applyMentionPick(first);
+                    else void handleSend();
+                  }}
+                />
+              </View>
+            </View>
+          )}
+        </View>
       )}
 
       {unreadLabel && (
@@ -750,7 +876,7 @@ export function ChatDetailContent({
             pendingScrollRef.current = true;
             listRef.current?.scrollToEnd({ animated: true });
           }}
-          style={[styles.unreadPill, { bottom: 92 + keyboardHeight }]}
+          style={[styles.unreadPill, { bottom: (openAsk ? 72 : composerReserve) + 12 }]}
         >
           <Text style={styles.unreadPillText}>↓ {unreadLabel}</Text>
         </Pressable>
@@ -772,6 +898,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.bg,
+  },
+  timeline: {
+    flex: 1,
   },
   header: {
     flexDirection: "row",
@@ -812,6 +941,20 @@ const styles = StyleSheet.create({
   },
   messages: {
     paddingVertical: 8,
+  },
+  composerFooter: {
+    position: "absolute",
+    right: 0,
+    bottom: 0,
+    left: 0,
+    paddingHorizontal: 8,
+  },
+  composerNotice: {
+    marginBottom: 6,
+    borderRadius: 14,
+    backgroundColor: colors.surfaceStrong,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
   },
   unreadDivider: {
     flexDirection: "row",
@@ -897,6 +1040,29 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 12,
   },
+  composerCard: {
+    overflow: "hidden",
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    backgroundColor: colors.bg,
+    paddingTop: 4,
+    paddingBottom: 4,
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6,
+  },
+  glassComposerCard: {
+    overflow: "hidden",
+    borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    backgroundColor: "transparent",
+    paddingTop: 4,
+    paddingBottom: 4,
+  },
   composer: {
     flexDirection: "row",
     alignItems: "flex-end",
@@ -904,18 +1070,17 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 6,
     gap: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
+  },
+  tokenUsage: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 2,
+    color: colors.textMuted,
+    fontSize: 11,
   },
   sendError: {
     paddingHorizontal: 16,
     color: colors.danger,
-    fontSize: 12,
-  },
-  mentionHint: {
-    paddingHorizontal: 16,
-    paddingBottom: 4,
-    color: colors.textSecondary,
     fontSize: 12,
   },
   mentionPicker: {
@@ -960,5 +1125,10 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: 20,
     backgroundColor: colors.surface,
+  },
+  glassInputContainer: {
+    flex: 1,
+    borderRadius: 20,
+    backgroundColor: "transparent",
   },
 });
