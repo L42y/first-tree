@@ -12,7 +12,7 @@ export default function ChatsStackLayout() {
   return (
     <Stack>
       <Stack.Screen
-        name="index"
+        name="chats"
         options={{
           ...nativeHeaderOptions,
           title: "Chats",
