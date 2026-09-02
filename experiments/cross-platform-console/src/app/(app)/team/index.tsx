@@ -54,18 +54,7 @@ export default function TeamScreen() {
 
   const listPane = (
     <View style={[styles.container, styles.teamPane]}>
-      <View style={styles.header}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.title}>Team</Text>
-          <Text style={styles.subtitle}>{(data ?? []).length} agents you manage</Text>
-        </View>
-        <Pressable
-          onPress={() => router.push("/agent/new")}
-          style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}
-        >
-          <Text style={styles.addButtonText}>+ New</Text>
-        </Pressable>
-      </View>
+      <Text style={styles.subtitle}>{(data ?? []).length} agents you manage</Text>
 
       {isLoading && (
         <View style={styles.center}>
@@ -179,36 +168,14 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 15,
   },
-  header: {
-    paddingHorizontal: 16,
-    paddingTop: 48,
-    paddingBottom: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: colors.text,
-  },
   subtitle: {
     color: colors.textSecondary,
     fontSize: 12,
-    marginTop: 2,
+    paddingHorizontal: 16,
+    paddingTop: 12,
   },
   pressed: {
     opacity: 0.75,
-  },
-  addButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 8,
-    backgroundColor: colors.accent,
-  },
-  addButtonText: {
-    color: colors.accentText,
-    fontWeight: "700",
-    fontSize: 13,
   },
   widePadding: {
     paddingHorizontal: 24,

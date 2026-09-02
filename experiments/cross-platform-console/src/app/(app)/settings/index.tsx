@@ -49,10 +49,6 @@ export default function SettingsScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Settings</Text>
-      </View>
-
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: CONTENT_BOTTOM_PADDING + tabBarInset }]}>
         <Text style={styles.sectionHeader}>Profile</Text>
         <View style={styles.card}>
@@ -156,19 +152,8 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.bg,
   },
-  header: {
-    paddingHorizontal: 16,
-    paddingTop: 48,
-    paddingBottom: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: colors.text,
-  },
   content: {
+    paddingTop: 12,
     paddingBottom: CONTENT_BOTTOM_PADDING,
   },
   sectionHeader: {

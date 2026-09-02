@@ -3,7 +3,6 @@ import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { fetchChatRows } from "~/lib/chats-api";
-import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
 import { colors } from "~/lib/theme";
 
 const CONTENT_BOTTOM_PADDING = 32;
@@ -11,11 +10,11 @@ const CONTENT_BOTTOM_PADDING = 32;
 /**
  * Attention — one aggregated surface for everything needing the user:
  * open asks first, then chats with unread mentions. Client-side view over
- * the same chat rows the list uses.
+ * the same chat rows the list uses. Reached from Quick Actions, so it's a
+ * root-level push (like chat/agent detail) rather than a tab.
  */
 export default function AttentionScreen() {
   const router = useRouter();
-  const tabBarInset = useTabBarFloatingInset();
   const { data, isLoading } = useQuery({
     queryKey: ["me", "chats", "list", "all"],
     queryFn: ({ signal }) => fetchChatRows("all", signal),
@@ -29,10 +28,10 @@ export default function AttentionScreen() {
   const openChat = (chatId: string) => router.push({ pathname: `/chat/${chatId}` } as never);
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={[styles.content, { paddingBottom: CONTENT_BOTTOM_PADDING + tabBarInset }]}
-    >
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <Pressable onPress={() => router.back()} hitSlop={8} style={styles.backButton}>
+        <Text style={styles.back}>Back</Text>
+      </Pressable>
       <Text style={styles.title}>Needs you</Text>
 
       {isLoading && <Text style={styles.hint}>Loading…</Text>}
@@ -93,6 +92,15 @@ const styles = StyleSheet.create({
   content: {
     paddingTop: 48,
     paddingBottom: CONTENT_BOTTOM_PADDING,
+  },
+  backButton: {
+    paddingHorizontal: 16,
+    marginBottom: 12,
+  },
+  back: {
+    color: colors.accent,
+    fontSize: 15,
+    fontWeight: "600",
   },
   title: {
     fontSize: 24,

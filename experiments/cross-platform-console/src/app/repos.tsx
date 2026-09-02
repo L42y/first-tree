@@ -1,17 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
+import { useRouter } from "expo-router";
 import { useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { listGitHubRepos } from "~/lib/integrations-api";
-import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
 import { colors } from "~/lib/theme";
 
 /**
  * Repositories — every repo the GitHub App can access for the signed-in
- * user (`GET /me/github/repos`), with client-side search.
+ * user (`GET /me/github/repos`), with client-side search. Reached from
+ * Quick Actions, so it's a root-level push (like chat/agent detail)
+ * rather than a tab.
  */
 export default function RepositoriesScreen() {
-  const tabBarInset = useTabBarFloatingInset();
+  const router = useRouter();
   const [search, setSearch] = useState("");
 
   const { data, isLoading, error } = useQuery({
@@ -22,8 +24,11 @@ export default function RepositoriesScreen() {
   const repos = (data?.repos ?? []).filter((repo) => repo.fullName.toLowerCase().includes(search.trim().toLowerCase()));
 
   return (
-    <View style={[styles.container, { paddingBottom: tabBarInset }]}>
+    <View style={styles.container}>
       <View style={styles.header}>
+        <Pressable onPress={() => router.back()} hitSlop={8} style={styles.backButton}>
+          <Text style={styles.back}>Back</Text>
+        </Pressable>
         <Text style={styles.title}>Repositories</Text>
         <Text style={styles.subtitle}>{data?.repos.length ?? 0} accessible via the GitHub App</Text>
       </View>
@@ -71,6 +76,14 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
+  },
+  backButton: {
+    marginBottom: 8,
+  },
+  back: {
+    color: colors.accent,
+    fontSize: 15,
+    fontWeight: "600",
   },
   title: {
     fontSize: 24,

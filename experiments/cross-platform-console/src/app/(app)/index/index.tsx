@@ -1,7 +1,6 @@
 import type { ListMeChatsResponse, MeChatRow } from "@first-tree/shared";
 import { LegendList } from "@legendapp/list/react-native";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -18,8 +17,6 @@ import {
 } from "react-native";
 import { ChatDetailContent } from "~/components/chat-detail";
 import { ChatListItem } from "~/components/chat-list-item";
-import { QuickActions } from "~/components/quick-actions";
-import { TeamSwitcher } from "~/components/team-switcher";
 import { useAuth } from "~/lib/auth-context";
 import { fetchChatRows, renameChat, setChatEngagement } from "~/lib/chats-api";
 import { getItem, setItem } from "~/lib/storage";
@@ -75,13 +72,11 @@ function persistScrollOffsets(): void {
 export default function ChatListScreen() {
   const listRef = useRef<FlatList<never> | null>(null);
   const restorePendingRef = useRef(true);
-  const router = useRouter();
   const queryClient = useQueryClient();
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
   const tabBarInset = useTabBarFloatingInset();
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
-  const [quickOpen, setQuickOpen] = useState(false);
   const { user, agentId: selfAgentId } = useAuth();
   const [filter, setFilter] = useState<"all" | "unread">("all");
   const [view, setView] = useState<"active" | "archived">("active");
@@ -245,16 +240,6 @@ export default function ChatListScreen() {
 
   const listPane = (
     <View style={[styles.container, isWide && styles.listPane]}>
-      <View style={styles.header}>
-        <Pressable onPress={() => setQuickOpen(true)} hitSlop={8} style={styles.quickButton}>
-          <Text style={styles.quickButtonText}>Quick</Text>
-        </Pressable>
-        <View>
-          <Text style={styles.title}>Chats</Text>
-          <TeamSwitcher />
-        </View>
-      </View>
-
       <View style={styles.filters}>
         <Pressable onPress={() => setFilter("all")} style={[styles.filter, filter === "all" && styles.filterActive]}>
           <Text style={[styles.filterText, filter === "all" && styles.filterActiveText]}>All</Text>
@@ -326,8 +311,6 @@ export default function ChatListScreen() {
           ) : null
         }
       />
-
-      <QuickActions visible={quickOpen} onClose={() => setQuickOpen(false)} />
     </View>
   );
 
@@ -377,18 +360,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     fontSize: 14,
   },
-  quickButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: colors.accent,
-    marginRight: 10,
-  },
-  quickButtonText: {
-    color: colors.accentText,
-    fontWeight: "700",
-    fontSize: 12,
-  },
   twoPane: {
     flexDirection: "row",
   },
@@ -409,25 +380,6 @@ const styles = StyleSheet.create({
   emptyPaneText: {
     color: colors.textMuted,
     fontSize: 15,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingTop: 48,
-    paddingBottom: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: colors.text,
-  },
-  subtitle: {
-    color: colors.textSecondary,
-    fontSize: 12,
   },
   filters: {
     flexDirection: "row",

@@ -41,15 +41,12 @@ export default function ContextScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Context</Text>
-        <View style={styles.windowRow}>
-          {WINDOWS.map((w) => (
-            <Pressable key={w} onPress={() => setWindow(w)} style={[styles.chip, window === w && styles.chipActive]}>
-              <Text style={[styles.chipText, window === w && styles.chipTextActive]}>{w}</Text>
-            </Pressable>
-          ))}
-        </View>
+      <View style={styles.windowRow}>
+        {WINDOWS.map((w) => (
+          <Pressable key={w} onPress={() => setWindow(w)} style={[styles.chip, window === w && styles.chipActive]}>
+            <Text style={[styles.chipText, window === w && styles.chipTextActive]}>{w}</Text>
+          </Pressable>
+        ))}
       </View>
 
       {isLoading && !data ? (
@@ -121,24 +118,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.bg,
   },
-  header: {
-    paddingHorizontal: 16,
-    paddingTop: 48,
-    paddingBottom: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: colors.text,
-  },
   windowRow: {
     flexDirection: "row",
     gap: 6,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 8,
   },
   chip: {
     paddingHorizontal: 10,

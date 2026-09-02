@@ -71,6 +71,24 @@ export default function RootLayout() {
                   }}
                 />
                 <Stack.Screen
+                  name="attention"
+                  options={{
+                    headerShown: false,
+                    contentStyle: { backgroundColor: colors.bg },
+                    gestureEnabled: true,
+                    fullScreenGestureEnabled: true,
+                  }}
+                />
+                <Stack.Screen
+                  name="repos"
+                  options={{
+                    headerShown: false,
+                    contentStyle: { backgroundColor: colors.bg },
+                    gestureEnabled: true,
+                    fullScreenGestureEnabled: true,
+                  }}
+                />
+                <Stack.Screen
                   name="ask/[requestId]"
                   options={{
                     presentation: "formSheet",

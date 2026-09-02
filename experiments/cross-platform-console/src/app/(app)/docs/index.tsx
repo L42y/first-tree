@@ -1,9 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
+import { Stack } from "expo-router";
 import { useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { MarkdownText } from "~/components/markdown-text";
 import type { DocStatus } from "~/lib/docs-api";
 import { getDocBySlug, listDocs } from "~/lib/docs-api";
+import { nativeHeaderOptions } from "~/lib/native-header";
 import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
 import { colors } from "~/lib/theme";
 
@@ -38,6 +40,17 @@ export default function DocsScreen() {
   if (openSlug) {
     return (
       <View style={styles.container}>
+        {/* Reader mode swaps the list's large title for a compact one — the
+            in-content Back below (not the native back arrow) returns to the
+            list, since this is local state, not a navigation push. */}
+        <Stack.Screen
+          options={{
+            ...nativeHeaderOptions,
+            headerLargeTitle: false,
+            headerBackVisible: false,
+            title: docQuery.data?.doc.title ?? "Doc",
+          }}
+        />
         <View style={styles.header}>
           <Pressable onPress={() => setOpenSlug(null)} hitSlop={8}>
             <Text style={styles.back}>Docs</Text>
@@ -61,9 +74,7 @@ export default function DocsScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Docs</Text>
-      </View>
+      <Stack.Screen options={{ ...nativeHeaderOptions, title: "Docs" }} />
 
       <View style={styles.filters}>
         {STATUS_FILTERS.map((s) => (
@@ -119,15 +130,10 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 16,
-    paddingTop: 48,
+    paddingTop: 12,
     paddingBottom: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
-  },
-  headerTitle: {
-    fontSize: 24,
-    fontWeight: "bold",
-    color: colors.text,
   },
   back: {
     color: colors.accent,
