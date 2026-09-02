@@ -754,7 +754,13 @@ export function ChatDetailContent({
 
       {!openAsk && (
         <View
-          style={[styles.composerFooter, { paddingBottom: keyboardHeight > 0 ? 0 : safeAreaInsets.bottom }]}
+          style={[
+            styles.composerFooter,
+            {
+              bottom: keyboardHeight,
+              paddingBottom: keyboardHeight > 0 ? 0 : safeAreaInsets.bottom,
+            },
+          ]}
           onLayout={({ nativeEvent: { layout } }) => {
             setComposerFooterHeight((previous) =>
               Math.abs(previous - layout.height) < 0.5 ? previous : layout.height,

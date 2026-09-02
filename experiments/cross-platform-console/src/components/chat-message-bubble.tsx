@@ -1,8 +1,9 @@
-import { StyleSheet, Text, View } from "react-native";
-
 import type { Message } from "@first-tree/shared";
+import { StyleSheet, Text, View } from "react-native";
 import { Avatar, type AvatarKind } from "~/components/avatar";
 import { MarkdownText } from "~/components/markdown-text";
+import { MessageImage } from "~/components/message-image";
+import { messageImageAttachments, messageInlineImage } from "~/lib/message-content";
 import { colors } from "~/lib/theme";
 
 export type BubbleAvatar = {
@@ -48,7 +49,33 @@ export function ChatMessageBubble({ message, isMe, senderName, avatar }: ChatMes
             {senderName}
           </Text>
         )}
-        <MarkdownText value={content} />
+        {message.format === "file" ? (
+          (() => {
+            const { caption, images } = messageImageAttachments(message);
+            const inlineImage = messageInlineImage(message);
+            if (inlineImage) {
+              return <MessageImage dataUri={inlineImage.data} filename="image" />;
+            }
+            if (images.length === 0) {
+              return <Text style={styles.unsupported}>Attachment</Text>;
+            }
+            return (
+              <View style={styles.attachmentGroup}>
+                {caption ? <MarkdownText value={caption} /> : null}
+                {images.map((image) => (
+                  <MessageImage
+                    key={image.imageId}
+                    imageId={image.imageId}
+                    filename={image.filename}
+                    style={images.length > 1 ? styles.galleryImage : undefined}
+                  />
+                ))}
+              </View>
+            );
+          })()
+        ) : (
+          <MarkdownText value={content} />
+        )}
         <Text style={styles.time}>{time}</Text>
       </View>
     </View>
@@ -94,5 +121,17 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     textAlign: "right",
     marginTop: 4,
+  },
+  attachmentGroup: {
+    gap: 6,
+  },
+  galleryImage: {
+    width: 164,
+    height: 164,
+  },
+  unsupported: {
+    color: colors.textMuted,
+    fontSize: 13,
+    fontStyle: "italic",
   },
 });
