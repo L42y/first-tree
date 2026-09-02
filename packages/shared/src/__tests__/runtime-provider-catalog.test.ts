@@ -216,9 +216,7 @@ describe("runtime provider identity + catalog completeness", () => {
     expect(runtimeProviderPreferredCredentialProse("deepseek-harness")).toContain("Mark as sensitive");
     expect(runtimeProviderPreferredCredentialProse("amp")).toBeNull();
     expect(runtimeProviderLoginCommand("amp")).toBe("amp login");
-    expect(runtimeProviderLoginCommand("zcode")).toBe(
-      'node "${FIRST_TREE_ZCODE_RUNTIME_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/first-tree/zcode/official/3.10.2-6414}/zcode.cjs" login  # requires Node 22.19.0+',
-    );
+    expect(runtimeProviderLoginCommand("zcode")).toBe("first-tree zcode login");
     expect(KIMI_NPM_PACKAGE).toBe("@moonshot-ai/kimi-code");
     expect(RUNTIME_PROVIDER_CATALOG["kimi-code"].install).toEqual({
       kind: "npm",

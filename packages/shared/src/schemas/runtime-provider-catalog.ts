@@ -44,16 +44,18 @@ export const ZCODE_MINIMUM_NODE_VERSION = "22.19.0";
 /**
  * Copy-pasteable host recovery step for a Computer that has no live
  * resolution to surface (Computers/setup, or the rare chat-timeline hint
- * before the runtime ever resolved). `ensureOfficialZcodeRuntime` honours
- * `FIRST_TREE_ZCODE_RUNTIME_CACHE` as the exact runtime dir, else
- * `XDG_CACHE_HOME` (else `$HOME/.cache`) plus the package-version subpath
- * (see `officialZcodeRuntimeCacheRoot` in
- * `packages/client/src/providers/zcode/official-runtime.ts`) — this shell
- * expression mirrors that precedence exactly so the printed command
- * resolves to the same file the client actually prepared, on any of the
- * three configurations, instead of assuming the unconfigured default path.
+ * before the runtime ever resolved). Points at the First Tree-owned
+ * `zcode login` driver (`apps/cli/src/commands/zcode/index.ts`) rather than
+ * a raw `node <path> login` invocation: the driver re-resolves the managed
+ * runtime the same way a provider turn does — honouring
+ * `FIRST_TREE_ZCODE_RUNTIME_CACHE` / `XDG_CACHE_HOME` overrides and
+ * launching with the exact `process.execPath` First Tree admitted — so this
+ * generic string never has to guess a host's cache root or Node binary. The
+ * literal `first-tree` name is the same channel-generic reference form used
+ * throughout `docs/cli-reference.md`; live per-Computer surfaces substitute
+ * the connected client's actual channel binary name.
  */
-export const ZCODE_OFFICIAL_DEFAULT_LOGIN_COMMAND = `node "\${FIRST_TREE_ZCODE_RUNTIME_CACHE:-\${XDG_CACHE_HOME:-$HOME/.cache}/first-tree/zcode/official/${ZCODE_OFFICIAL_PACKAGE_VERSION}}/zcode.cjs" login  # requires Node ${ZCODE_MINIMUM_NODE_VERSION}+`;
+export const ZCODE_OFFICIAL_DEFAULT_LOGIN_COMMAND = "first-tree zcode login";
 /**
  * Remediation package list when a Client/CLI install is missing the bundled
  * DeepSeek Harness closure. The portable First Tree CLI is expected to ship
