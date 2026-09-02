@@ -805,7 +805,6 @@ export function ChatDetailContent({
             <ComposerSurface
               style={styles.glassComposerCard}
               glassEffectStyle="regular"
-              tintColor={colors.bg}
               colorScheme="dark"
               isInteractive
             >
