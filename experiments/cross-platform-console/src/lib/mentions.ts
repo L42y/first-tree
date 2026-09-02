@@ -65,6 +65,39 @@ export function findSolePeerAgentId(
 }
 
 /**
+ * Web parity (`chat-by-id.tsx` `pickPrimaryAgent`): the agent the composer
+ * names in its placeholder — the first non-self, non-human speaker, else the
+ * first non-self speaker, else the viewer.
+ */
+export function pickPrimaryAgent(
+  participants: readonly Pick<ChatParticipantDetail, "agentId" | "type">[],
+  myAgentId: string | null | undefined,
+): string | null {
+  const nonSelf = participants.filter((participant) => participant.agentId !== myAgentId);
+  const nonHuman = nonSelf.find((participant) => participant.type !== "human");
+  if (nonHuman) return nonHuman.agentId;
+  if (nonSelf[0]) return nonSelf[0].agentId;
+  return myAgentId ?? null;
+}
+
+/**
+ * Web parity (`chat-view.tsx` composer placeholder chain, mobile variant):
+ * a self-only roster points at adding someone, a group carries the @mention
+ * rule, and anything else names the primary agent. The desktop
+ * `/ for commands · @ to mention` suffix is keyboard teaching that does not
+ * apply to a touch surface.
+ */
+export function composerPlaceholder(args: {
+  selfOnlyRoster: boolean;
+  requiresMention: boolean;
+  primaryDisplayName: string | null;
+}): string {
+  if (args.selfOnlyRoster) return "Add a participant to send a message";
+  if (args.requiresMention) return "In a group, @mention who this is for";
+  return `Message @${args.primaryDisplayName ?? "—"}`;
+}
+
+/**
  * Put an unfinished `@` in an empty group composer once, so the recipient
  * picker leads instead of letting the author type an unaddressed message.
  * Clearing it must not bring it back until the next chat visit.

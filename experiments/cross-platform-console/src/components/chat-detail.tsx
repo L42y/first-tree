@@ -46,10 +46,12 @@ import {
 import {
   buildMentionCandidates,
   buildMentionInsert,
+  composerPlaceholder,
   computeRequiresMention,
   findActiveMentionTrigger,
   findSolePeerAgentId,
   isSelfOnlySpeakerRoster,
+  pickPrimaryAgent,
   rankMentionCandidates,
   shouldPrimeMentionOnFocus,
 } from "~/lib/mentions";
@@ -401,6 +403,20 @@ export function ChatDetailContent({
     () => isSelfOnlySpeakerRoster(participantAgentIds, selfAgentId),
     [participantAgentIds, selfAgentId],
   );
+  const primaryAgentId = useMemo(
+    () => pickPrimaryAgent(chatQuery.data?.participants ?? [], selfAgentId),
+    [chatQuery.data?.participants, selfAgentId],
+  );
+  const inputPlaceholder = useMemo(() => {
+    // Until the roster loads there is no resolved peer to name.
+    if (!chatQuery.data) return "Message…";
+    const primary = chatQuery.data.participants.find((participant) => participant.agentId === primaryAgentId);
+    return composerPlaceholder({
+      selfOnlyRoster,
+      requiresMention,
+      primaryDisplayName: primary?.displayName ?? null,
+    });
+  }, [chatQuery.data, primaryAgentId, requiresMention, selfOnlyRoster]);
   const solePeerAgentId = useMemo(
     () => findSolePeerAgentId(chatQuery.data?.participants ?? [], selfAgentId),
     [chatQuery.data?.participants, selfAgentId],
@@ -819,13 +835,7 @@ export function ChatDetailContent({
                   onChangeText={setMessage}
                   onSelectionChange={({ nativeEvent: { selection } }) => setCaret(selection.start)}
                   onFocus={handleComposerFocus}
-                  placeholder={
-                    selfOnlyRoster
-                      ? "Add a participant to send a message"
-                      : requiresMention
-                        ? "In a group, @mention who this is for"
-                        : "Message…"
-                  }
+                  placeholder={inputPlaceholder}
                   multiline
                   maxLength={4000}
                   returnKeyType="send"
@@ -851,13 +861,7 @@ export function ChatDetailContent({
                   onChangeText={setMessage}
                   onSelectionChange={({ nativeEvent: { selection } }) => setCaret(selection.start)}
                   onFocus={handleComposerFocus}
-                  placeholder={
-                    selfOnlyRoster
-                      ? "Add a participant to send a message"
-                      : requiresMention
-                        ? "In a group, @mention who this is for"
-                        : "Message…"
-                  }
+                  placeholder={inputPlaceholder}
                   multiline
                   maxLength={4000}
                   returnKeyType="send"

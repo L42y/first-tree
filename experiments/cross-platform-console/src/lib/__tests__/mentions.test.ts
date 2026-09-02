@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   buildMentionCandidates,
   buildMentionInsert,
+  composerPlaceholder,
   computeRequiresMention,
   findActiveMentionTrigger,
   findSolePeerAgentId,
   isSelfOnlySpeakerRoster,
+  pickPrimaryAgent,
   rankMentionCandidates,
   shouldPrimeMentionOnFocus,
 } from "../mentions";
@@ -41,6 +43,29 @@ describe("expo mention addressing", () => {
     expect(isSelfOnlySpeakerRoster(["self"], "self")).toBe(true);
     expect(findSolePeerAgentId(roster, "self")).toBeNull();
     expect(findSolePeerAgentId(roster.slice(0, 2), "self")).toBe("peer");
+  });
+
+  it("picks the primary agent like the web route", () => {
+    expect(pickPrimaryAgent(roster, "self")).toBe("peer");
+    expect(pickPrimaryAgent(roster.slice(0, 2), "self")).toBe("peer");
+    expect(pickPrimaryAgent([participant("self", "self-agent")], "self")).toBe("self");
+    const humanPeer = { ...participant("human", "human-user", "Human"), type: "human" };
+    expect(pickPrimaryAgent([participant("self", "self-agent"), humanPeer, participant("bot", "bot")], "self")).toBe(
+      "bot",
+    );
+    expect(pickPrimaryAgent([participant("self", "self-agent"), humanPeer], "self")).toBe("human");
+  });
+
+  it("duplicates the web composer placeholder chain", () => {
+    expect(composerPlaceholder({ selfOnlyRoster: true, requiresMention: false, primaryDisplayName: null })).toBe(
+      "Add a participant to send a message",
+    );
+    expect(composerPlaceholder({ selfOnlyRoster: false, requiresMention: true, primaryDisplayName: "Peer" })).toBe(
+      "In a group, @mention who this is for",
+    );
+    expect(composerPlaceholder({ selfOnlyRoster: false, requiresMention: false, primaryDisplayName: "Peer" })).toBe(
+      "Message @Peer",
+    );
   });
 
   it("excludes self and uses canonical names for routing", () => {
