@@ -13,6 +13,7 @@ import {
   StyleSheet,
   Text,
   View,
+  type ViewToken,
 } from "react-native";
 import { Avatar } from "~/components/avatar";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
@@ -20,6 +21,15 @@ import { LiveMarkdownInput, type LiveMarkdownInputHandle } from "~/components/li
 import { MessageCard } from "~/components/message-card";
 import { ASK_MODAL_ROUTE, fetchOpenRequests, parseAskRequest } from "~/lib/ask";
 import { useAuth } from "~/lib/auth-context";
+import {
+  countUnreadMessages,
+  findFirstUnreadIndex,
+  findMessageIndexById,
+  flattenNewestFirstMessages,
+  formatNewMessages,
+  getChatReadState,
+  saveChatReadState,
+} from "~/lib/chat-read-state";
 import { getChat, listChatMessages, markMeChatRead, type PaginatedMessages, sendChatMessage } from "~/lib/chats-api";
 import {
   buildMentionCandidates,
@@ -39,11 +49,28 @@ function patchChatRow(row: MeChatRow, chatId: string, preview: string, activityA
   if (row.chatId !== chatId) return row;
   return {
     ...row,
+    chatHasExplicitMentionToMe: false,
+    unreadMentionCount: 0,
     lastMessageAt: activityAt,
     lastMessagePreview: preview,
     activityAt,
   };
 }
+
+function markChatRowsRead(previous: ListMeChatsResponse | undefined, chatId: string): ListMeChatsResponse | undefined {
+  if (!previous) return undefined;
+  const clearRow = (row: MeChatRow): MeChatRow =>
+    row.chatId === chatId ? { ...row, unreadMentionCount: 0, chatHasExplicitMentionToMe: false } : row;
+  return {
+    ...previous,
+    priorityRows: { ...previous.priorityRows, pinned: previous.priorityRows.pinned.map(clearRow) },
+    rows: previous.rows.map(clearRow),
+  };
+}
+
+type TimelineItem =
+  | { kind: "message"; key: string; message: Message }
+  | { kind: "divider"; key: string; count: number };
 
 type MessagesCache = InfiniteData<PaginatedMessages, string | undefined>;
 
@@ -72,7 +99,7 @@ export function ChatDetailContent({
   const pathname = usePathname();
   const { user, memberId, agentId: selfAgentId } = useAuth();
   const queryClient = useQueryClient();
-  const listRef = useRef<FlatList<Message>>(null);
+  const listRef = useRef<FlatList<TimelineItem>>(null);
   const askModalRequestRef = useRef<string | null>(null);
   const composerRef = useRef<LiveMarkdownInputHandle>(null);
   const focusPrimedRef = useRef(false);
@@ -80,6 +107,15 @@ export function ChatDetailContent({
   // Set when messages first arrive (or after sending) so the next
   // onContentSizeChange scrolls to the latest message exactly once.
   const pendingScrollRef = useRef(false);
+  const readLoadedRef = useRef(false);
+  const bottomVisibleRef = useRef<string | null>(null);
+  const latestKnownRef = useRef<string | null>(null);
+  const serverSyncedRef = useRef<string | null>(null);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initialScrollAnchorRef = useRef<string | null>(null);
+  const [frozenUnreadAnchorId, setFrozenUnreadAnchorId] = useState<string | null>(null);
+  const [sessionHighestId, setSessionHighestId] = useState<string | null>(null);
+  const [readReady, setReadReady] = useState(false);
   const [message, setMessage] = useState("");
   const [caret, setCaret] = useState(0);
   const [sending, setSending] = useState(false);
@@ -113,19 +149,123 @@ export function ChatDetailContent({
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
 
+  const flushReadState = useCallback(() => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    if (!readLoadedRef.current) return;
+    const bottomVisible = bottomVisibleRef.current;
+    const latestKnown = latestKnownRef.current;
+    if (!bottomVisible || !latestKnown) return;
+    void saveChatReadState(chatId, bottomVisible, latestKnown);
+  }, [chatId]);
+
+  const scheduleReadStateSave = useCallback(() => {
+    if (!readLoadedRef.current) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(flushReadState, 600);
+  }, [flushReadState]);
+
+  // Load the previous pair before the first scroll and before the server read
+  // timestamp advances. The divider stays frozen at the snapshot; it never
+  // slides forward as later messages arrive during this visit.
   useEffect(() => {
-    void markMeChatRead(chatId).then(() => {
-      // Read state is server-side; refresh the list badges immediately
-      // instead of waiting for the next poll.
-      void queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
-    });
+    let active = true;
+    readLoadedRef.current = false;
+    bottomVisibleRef.current = null;
+    latestKnownRef.current = null;
+    serverSyncedRef.current = null;
+    setFrozenUnreadAnchorId(null);
+    setSessionHighestId(null);
+    setReadReady(false);
+    initialScrollAnchorRef.current = null;
     pendingScrollRef.current = true;
-  }, [chatId, queryClient]);
+
+    void getChatReadState(chatId).then((previousState) => {
+      if (!active) return;
+      initialScrollAnchorRef.current = previousState?.bottomVisibleMessageId ?? null;
+      setFrozenUnreadAnchorId(previousState?.latestKnownMessageId ?? null);
+      readLoadedRef.current = true;
+      setReadReady(true);
+
+      // Clear the cached badge immediately so returning to Chats does not
+      // flash the old unread state while the authoritative refresh is in flight.
+      queryClient.setQueriesData<ListMeChatsResponse>({ queryKey: ["me", "chats", "list"] }, (previous) =>
+        markChatRowsRead(previous, chatId),
+      );
+      void markMeChatRead(chatId).then(() => {
+        void queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
+      });
+    });
+
+    return () => {
+      active = false;
+      flushReadState();
+    };
+  }, [chatId, flushReadState, queryClient]);
 
   const messageCount = (messagesQuery.data?.pages ?? []).reduce((total, page) => total + page.items.length, 0);
   useEffect(() => {
     if (messageCount > 0) pendingScrollRef.current = true;
   }, [messageCount]);
+
+  const messages = useMemo(
+    () => flattenNewestFirstMessages((messagesQuery.data?.pages ?? []).map((page) => page.items)),
+    [messagesQuery.data],
+  );
+  const latestMessage = messages.at(-1);
+  const latestServerMessageId = latestMessage && !latestMessage.id.startsWith("optimistic-") ? latestMessage.id : null;
+
+  useEffect(() => {
+    latestKnownRef.current = latestServerMessageId;
+    if (!readReady) return;
+    if (!latestServerMessageId) return;
+    if (serverSyncedRef.current === latestServerMessageId) return;
+    serverSyncedRef.current = latestServerMessageId;
+
+    // The chat can receive a message while it is open. Mark that arrival read
+    // immediately and clear cached list badges; visibility of the unread pill
+    // is driven by the local scroll watermark until the user reaches it.
+    queryClient.setQueriesData<ListMeChatsResponse>({ queryKey: ["me", "chats", "list"] }, (previous) =>
+      markChatRowsRead(previous, chatId),
+    );
+    void markMeChatRead(chatId).then(() => {
+      void queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
+    });
+  }, [chatId, latestServerMessageId, queryClient, readReady]);
+
+  const selfSenderIds = useMemo(
+    () => [memberId, user?.id].filter((id): id is string => Boolean(id)),
+    [memberId, user?.id],
+  );
+  const unreadBaselineId = useMemo(() => {
+    const frozenIndex = findMessageIndexById(messages, frozenUnreadAnchorId);
+    const sessionIndex = findMessageIndexById(messages, sessionHighestId);
+    if (frozenIndex < 0) return sessionHighestId;
+    if (sessionIndex < 0) return frozenUnreadAnchorId;
+    return sessionIndex > frozenIndex ? sessionHighestId : frozenUnreadAnchorId;
+  }, [frozenUnreadAnchorId, messages, sessionHighestId]);
+  const unreadCount = useMemo(
+    () => countUnreadMessages(messages, unreadBaselineId, selfSenderIds),
+    [messages, selfSenderIds, unreadBaselineId],
+  );
+  const unreadLabel = formatNewMessages(unreadCount);
+  const dividerInsertIndex = useMemo(() => {
+    const firstUnreadIndex = findFirstUnreadIndex(messages, frozenUnreadAnchorId, selfSenderIds);
+    if (firstUnreadIndex < 0) return -1;
+    const reachedIndex = findMessageIndexById(messages, unreadBaselineId);
+    // Once the viewer's bottom watermark reaches the first unread row, stop
+    // rendering the divider instead of leaving a stale ribbon mid-thread.
+    if (reachedIndex >= firstUnreadIndex) return -1;
+    return firstUnreadIndex;
+  }, [frozenUnreadAnchorId, messages, selfSenderIds, unreadBaselineId]);
+  const timeline = useMemo<TimelineItem[]>(() => {
+    const messageItems = messages.map((message): TimelineItem => ({ kind: "message", key: message.id, message }));
+    if (dividerInsertIndex < 0) return messageItems;
+    const divider: TimelineItem = { kind: "divider", key: "unread-divider", count: unreadCount };
+    return [...messageItems.slice(0, dividerInsertIndex), divider, ...messageItems.slice(dividerInsertIndex)];
+  }, [dividerInsertIndex, messages, unreadCount]);
 
   // Markdown bubbles measure asynchronously, so content height keeps growing
   // after the first onContentSizeChange. Scrolling to the end a single time
@@ -165,14 +305,6 @@ export function ChatDetailContent({
   );
 
   const chat = chatQuery.data;
-  const messages = useMemo(
-    () =>
-      (messagesQuery.data?.pages ?? [])
-        .flatMap((page) => page.items)
-        .slice()
-        .reverse(),
-    [messagesQuery.data],
-  );
 
   // The viewer's own open ask, if any. Scoped server-side to this viewer and
   // independent of the loaded message window, so it is the whole answer to
@@ -394,6 +526,12 @@ export function ChatDetailContent({
       );
       await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
       await queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
+      bottomVisibleRef.current = saved.id;
+      latestKnownRef.current = saved.id;
+      serverSyncedRef.current = saved.id;
+      setSessionHighestId(saved.id);
+      void saveChatReadState(chatId, saved.id, saved.id);
+      pendingScrollRef.current = true;
       listRef.current?.scrollToEnd({ animated: true });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Send failed";
@@ -412,6 +550,58 @@ export function ChatDetailContent({
   }, [effectiveSendMentions, message, memberId, openAsk, queryClient, sendBlockedByMentionGate, sending, chatId]);
   const isLoading = chatQuery.isLoading || messagesQuery.isLoading;
   const error = chatQuery.error ?? messagesQuery.error;
+  const scrollToInitialAnchor = useCallback(() => {
+    const anchorId = initialScrollAnchorRef.current;
+    if (!anchorId) {
+      listRef.current?.scrollToEnd({ animated: false });
+      return;
+    }
+    const anchorIndex = findMessageIndexById(messages, anchorId);
+    // A snapshot can age out of the newest 50 messages. Fall back to the tip
+    // instead of scrolling to an unrelated row at the top of the window.
+    if (anchorIndex < 0) {
+      initialScrollAnchorRef.current = null;
+      listRef.current?.scrollToEnd({ animated: false });
+      return;
+    }
+    listRef.current?.scrollToIndex({ animated: false, index: anchorIndex, viewPosition: 1 });
+  }, [messages]);
+
+  // AsyncStorage and the first network page resolve independently. Do not
+  // perform the one-shot scroll until the read pair has resolved; otherwise a
+  // fast first paint sends the viewer to the tip before the unread anchor is
+  // known.
+  useEffect(() => {
+    if (!readReady || messages.length === 0 || !pendingScrollRef.current || userScrolledRef.current) return;
+    pendingScrollRef.current = false;
+    requestAnimationFrame(() => scrollToInitialAnchor());
+  }, [messages.length, readReady, scrollToInitialAnchor]);
+
+  const handleViewableItemsChanged = useCallback(
+    ({ viewableItems }: { viewableItems: ViewToken[] }) => {
+      const bottom = viewableItems
+        .filter((token) => token.isViewable)
+        .reduce<(typeof viewableItems)[number] | null>((latest, token) => {
+          if (!latest || (token.index ?? -1) > (latest.index ?? -1)) return token;
+          return latest;
+        }, null);
+      const messageId =
+        bottom?.item && typeof bottom.item === "object" && "id" in bottom.item
+          ? String((bottom.item as { id: unknown }).id)
+          : null;
+      if (!messageId) return;
+      bottomVisibleRef.current = messageId;
+
+      const currentIndex = findMessageIndexById(messages, messageId);
+      setSessionHighestId((previous) => {
+        const previousIndex = findMessageIndexById(messages, previous);
+        if (currentIndex >= 0 && (previousIndex < 0 || currentIndex > previousIndex)) return messageId;
+        return previous;
+      });
+      scheduleReadStateSave();
+    },
+    [messages, scheduleReadStateSave],
+  );
 
   return (
     <View style={styles.container}>
@@ -458,24 +648,34 @@ export function ChatDetailContent({
 
       <FlatList
         ref={listRef}
-        data={messages}
-        keyExtractor={(item) => item.id}
+        data={timeline}
+        keyExtractor={(item) => item.key}
         maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
         renderItem={({ item }) => {
+          if (item.kind === "divider") {
+            return (
+              <View style={styles.unreadDivider}>
+                <View style={styles.unreadDividerLine} />
+                <Text style={styles.unreadDividerText}>New messages</Text>
+                <View style={styles.unreadDividerLine} />
+              </View>
+            );
+          }
+          const { message: itemMessage } = item;
           const messageView =
-            item.format === "card" ? (
-              <MessageCard message={item} />
+            itemMessage.format === "card" ? (
+              <MessageCard message={itemMessage} />
             ) : (
               <ChatMessageBubble
-                message={item}
-                isMe={item.senderId === memberId || item.senderId === user?.id}
-                senderName={participantNames(item.senderId)}
-                avatar={toBubbleAvatar(item.senderId)}
+                message={itemMessage}
+                isMe={itemMessage.senderId === memberId || itemMessage.senderId === user?.id}
+                senderName={participantNames(itemMessage.senderId)}
+                avatar={toBubbleAvatar(itemMessage.senderId)}
               />
             );
-          return askModalVisible && item.id === openAskId ? (
+          return askModalVisible && itemMessage.id === openAskId ? (
             <View style={styles.hiddenModalMessage}>{messageView}</View>
           ) : (
             messageView
@@ -494,15 +694,17 @@ export function ChatDetailContent({
           userScrolledRef.current = true;
           pendingScrollRef.current = false;
         }}
+        onViewableItemsChanged={handleViewableItemsChanged}
+        viewabilityConfig={{ itemVisiblePercentThreshold: 98 }}
         onContentSizeChange={() => {
-          if (!pendingScrollRef.current || userScrolledRef.current) return;
+          if (!readReady || !pendingScrollRef.current || userScrolledRef.current) return;
           // React Native can emit this callback repeatedly as markdown and
           // images finish measuring. Consume the request before scheduling
           // the one intentional initial/send scroll so later measurements do
           // not drag the reader back to the bottom.
           pendingScrollRef.current = false;
           requestAnimationFrame(() => {
-            if (!userScrolledRef.current) listRef.current?.scrollToEnd({ animated: false });
+            if (!userScrolledRef.current) scrollToInitialAnchor();
           });
         }}
       />
@@ -580,6 +782,19 @@ export function ChatDetailContent({
           </View>
         </>
       )}
+
+      {unreadLabel && (
+        <Pressable
+          onPress={() => {
+            userScrolledRef.current = false;
+            pendingScrollRef.current = true;
+            listRef.current?.scrollToEnd({ animated: true });
+          }}
+          style={[styles.unreadPill, { bottom: 92 + keyboardHeight }]}
+        >
+          <Text style={styles.unreadPillText}>↓ {unreadLabel}</Text>
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -637,6 +852,45 @@ const styles = StyleSheet.create({
   },
   messages: {
     paddingVertical: 8,
+  },
+  unreadDivider: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginVertical: 12,
+  },
+  unreadDividerLine: {
+    flex: 1,
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: colors.border,
+  },
+  unreadDividerText: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  unreadPill: {
+    position: "absolute",
+    right: 16,
+    bottom: 76,
+    borderRadius: 18,
+    backgroundColor: colors.surfaceStrong,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    shadowColor: "#000",
+    shadowOpacity: 0.14,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 4,
+  },
+  unreadPillText: {
+    color: colors.text,
+    fontSize: 12,
+    fontWeight: "600",
   },
   hiddenModalMessage: {
     opacity: 0,
