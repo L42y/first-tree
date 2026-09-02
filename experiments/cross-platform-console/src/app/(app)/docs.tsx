@@ -1,21 +1,15 @@
-import { useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from "react-native";
 import { useQuery } from "@tanstack/react-query";
-
+import { useState } from "react";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { MarkdownText } from "~/components/markdown-text";
 import type { DocStatus } from "~/lib/docs-api";
 import { getDocBySlug, listDocs } from "~/lib/docs-api";
-import { MarkdownText } from "~/components/markdown-text";
+import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
 import { colors } from "~/lib/theme";
 
 const STATUS_FILTERS: Array<DocStatus | "all"> = ["all", "draft", "in_review", "approved", "archived"];
+const LIST_BOTTOM_PADDING = 24;
+const DOC_CONTENT_BOTTOM_PADDING = 40;
 
 /**
  * Context → Docs: read-only list of the workspace's review documents
@@ -25,6 +19,7 @@ const STATUS_FILTERS: Array<DocStatus | "all"> = ["all", "draft", "in_review", "
 export default function DocsScreen() {
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
+  const tabBarInset = useTabBarFloatingInset();
   const [statusFilter, setStatusFilter] = useState<DocStatus | "all">("all");
   const [openSlug, setOpenSlug] = useState<string | null>(null);
 
@@ -51,7 +46,9 @@ export default function DocsScreen() {
         {docQuery.isLoading ? (
           <ActivityIndicator style={styles.centerSelf} color={colors.textMuted} />
         ) : docQuery.data ? (
-          <ScrollView contentContainerStyle={styles.docContent}>
+          <ScrollView
+            contentContainerStyle={[styles.docContent, { paddingBottom: DOC_CONTENT_BOTTOM_PADDING + tabBarInset }]}
+          >
             <Text style={styles.docTitle}>{docQuery.data.doc.title}</Text>
             <MarkdownText value={docQuery.data.content} />
           </ScrollView>
@@ -85,7 +82,13 @@ export default function DocsScreen() {
       ) : (listQuery.data?.items.length ?? 0) === 0 ? (
         <Text style={styles.emptyText}>No documents.</Text>
       ) : (
-        <ScrollView contentContainerStyle={isWide ? [styles.list, styles.wideList] : styles.list}>
+        <ScrollView
+          contentContainerStyle={[
+            styles.list,
+            isWide && styles.wideList,
+            { paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
+          ]}
+        >
           {(listQuery.data?.items ?? []).map((doc) => (
             <Pressable
               key={doc.id}
@@ -155,7 +158,7 @@ const styles = StyleSheet.create({
     color: colors.accentText,
   },
   list: {
-    paddingBottom: 24,
+    paddingBottom: LIST_BOTTOM_PADDING,
   },
   wideList: {
     maxWidth: 900,
@@ -196,7 +199,7 @@ const styles = StyleSheet.create({
   },
   docContent: {
     padding: 16,
-    paddingBottom: 40,
+    paddingBottom: DOC_CONTENT_BOTTOM_PADDING,
     gap: 8,
   },
   docTitle: {

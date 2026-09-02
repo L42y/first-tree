@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import {
   ActivityIndicator,
@@ -9,13 +10,14 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { useQuery } from "@tanstack/react-query";
 
 import type { ContextTreeWindow } from "~/lib/context-api";
 import { getContextTreeSnapshot } from "~/lib/context-api";
+import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
 import { colors } from "~/lib/theme";
 
 const WINDOWS: ContextTreeWindow[] = ["1d", "7d", "30d"];
+const LIST_BOTTOM_PADDING = 24;
 
 /**
  * Context — read-only feed of context-tree writes for the active
@@ -25,6 +27,7 @@ const WINDOWS: ContextTreeWindow[] = ["1d", "7d", "30d"];
 export default function ContextScreen() {
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
+  const tabBarInset = useTabBarFloatingInset();
   const [window, setWindow] = useState<ContextTreeWindow>("7d");
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -42,11 +45,7 @@ export default function ContextScreen() {
         <Text style={styles.title}>Context</Text>
         <View style={styles.windowRow}>
           {WINDOWS.map((w) => (
-            <Pressable
-              key={w}
-              onPress={() => setWindow(w)}
-              style={[styles.chip, window === w && styles.chipActive]}
-            >
+            <Pressable key={w} onPress={() => setWindow(w)} style={[styles.chip, window === w && styles.chipActive]}>
               <Text style={[styles.chipText, window === w && styles.chipTextActive]}>{w}</Text>
             </Pressable>
           ))}
@@ -67,7 +66,11 @@ export default function ContextScreen() {
         </View>
       ) : (
         <ScrollView
-          contentContainerStyle={isWide ? [styles.list, styles.wideList] : styles.list}
+          contentContainerStyle={[
+            styles.list,
+            isWide && styles.wideList,
+            { paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
+          ]}
           refreshControl={
             <RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} tintColor={colors.textMuted} />
           }
@@ -87,9 +90,7 @@ export default function ContextScreen() {
                   <Text style={styles.nodePath} numberOfLines={1}>
                     {update.path}
                   </Text>
-                  {expanded && update.summary ? (
-                    <Text style={styles.summary}>{update.summary}</Text>
-                  ) : null}
+                  {expanded && update.summary ? <Text style={styles.summary}>{update.summary}</Text> : null}
                   <Text style={styles.meta}>
                     {update.changeType}
                     {update.changedBy ? ` · ${update.changedBy}` : ""}
@@ -171,7 +172,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   list: {
-    paddingBottom: 24,
+    paddingBottom: LIST_BOTTOM_PADDING,
   },
   card: {
     marginHorizontal: 16,

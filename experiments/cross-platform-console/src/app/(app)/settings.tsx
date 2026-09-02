@@ -1,14 +1,14 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { useQuery } from "@tanstack/react-query";
-
-import { useQueryClient } from "@tanstack/react-query";
-
-import { useAuth } from "~/lib/auth-context";
-import { listMyClients, listMyOrganizations } from "~/lib/team-api";
-import { getMyAuthProviders, listGitHubRepos } from "~/lib/integrations-api";
 import { Avatar } from "~/components/avatar";
+import { useAuth } from "~/lib/auth-context";
 import { API_BASE_URL } from "~/lib/env";
+import { getMyAuthProviders, listGitHubRepos } from "~/lib/integrations-api";
+import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
+import { listMyClients, listMyOrganizations } from "~/lib/team-api";
 import { colors } from "~/lib/theme";
+
+const CONTENT_BOTTOM_PADDING = 32;
 
 /**
  * Settings — profile, workspace selection, and app/runtime info. Log out
@@ -17,6 +17,7 @@ import { colors } from "~/lib/theme";
 export default function SettingsScreen() {
   const { user, teamDisplayName, organizationId, selectOrganization, logout } = useAuth();
   const queryClient = useQueryClient();
+  const tabBarInset = useTabBarFloatingInset();
 
   const switchOrg = async (id: string) => {
     if (id === organizationId) return;
@@ -52,7 +53,7 @@ export default function SettingsScreen() {
         <Text style={styles.title}>Settings</Text>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: CONTENT_BOTTOM_PADDING + tabBarInset }]}>
         <Text style={styles.sectionHeader}>Profile</Text>
         <View style={styles.card}>
           <View style={styles.profileRow}>
@@ -78,15 +79,9 @@ export default function SettingsScreen() {
                 key={org.id}
                 disabled={active}
                 onPress={() => void switchOrg(org.id)}
-                style={({ pressed }) => [
-                  styles.orgRow,
-                  active && styles.orgRowActive,
-                  pressed && styles.pressed,
-                ]}
+                style={({ pressed }) => [styles.orgRow, active && styles.orgRowActive, pressed && styles.pressed]}
               >
-                <Text style={[styles.orgName, active && styles.orgNameActive]}>
-                  {org.displayName || org.name}
-                </Text>
+                <Text style={[styles.orgName, active && styles.orgNameActive]}>{org.displayName || org.name}</Text>
                 <Text style={styles.orgMeta}>{active ? "Active" : org.role}</Text>
               </Pressable>
             );
@@ -119,9 +114,7 @@ export default function SettingsScreen() {
         <View style={[styles.card, styles.workspaceCard]}>
           {(authProvidersQuery.data?.providers ?? []).map((provider) => (
             <View key={provider.provider} style={styles.orgRow}>
-              <Text style={styles.orgName}>
-                {provider.provider === "google" ? "Google" : "GitHub"} sign-in
-              </Text>
+              <Text style={styles.orgName}>{provider.provider === "google" ? "Google" : "GitHub"} sign-in</Text>
               <Text style={styles.orgMeta}>
                 {(provider.connected ?? false)
                   ? `Connected${provider.email ? ` · ${provider.email}` : ""}`
@@ -129,16 +122,13 @@ export default function SettingsScreen() {
               </Text>
             </View>
           ))}
-          {!authProvidersQuery.isLoading &&
-            (authProvidersQuery.data?.providers?.length ?? 0) === 0 && (
-              <Text style={styles.workspaceMeta}>Loading sign-in identities…</Text>
-            )}
+          {!authProvidersQuery.isLoading && (authProvidersQuery.data?.providers?.length ?? 0) === 0 && (
+            <Text style={styles.workspaceMeta}>Loading sign-in identities…</Text>
+          )}
           <View style={[styles.orgRow, styles.orgRowLast]}>
             <Text style={styles.orgName}>GitHub repositories</Text>
             <Text style={styles.orgMeta}>
-              {githubReposQuery.isLoading
-                ? "…"
-                : `${githubReposQuery.data?.repos?.length ?? 0} accessible via the App`}
+              {githubReposQuery.isLoading ? "…" : `${githubReposQuery.data?.repos?.length ?? 0} accessible via the App`}
             </Text>
           </View>
         </View>
@@ -179,7 +169,7 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   content: {
-    paddingBottom: 32,
+    paddingBottom: CONTENT_BOTTOM_PADDING,
   },
   sectionHeader: {
     fontSize: 11,

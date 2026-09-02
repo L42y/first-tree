@@ -14,9 +14,12 @@ import {
 
 import { AgentDetailContent } from "~/components/agent-detail";
 import { Avatar } from "~/components/avatar";
+import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
 import type { ManagedAgent } from "~/lib/team-api";
 import { listManagedAgents } from "~/lib/team-api";
 import { colors } from "~/lib/theme";
+
+const LIST_BOTTOM_PADDING = 24;
 
 /**
  * Team — every agent the signed-in user manages across organizations
@@ -26,6 +29,7 @@ export default function TeamScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
+  const tabBarInset = useTabBarFloatingInset();
   const [selected, setSelected] = useState<{ uuid: string; provider?: string } | null>(null);
   const numColumns = width >= 1024 ? 2 : 1;
 
@@ -82,7 +86,11 @@ export default function TeamScreen() {
           refreshControl={
             <RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} tintColor={colors.textMuted} />
           }
-          contentContainerStyle={[styles.listContent, numColumns > 1 && styles.widePadding]}
+          contentContainerStyle={[
+            styles.listContent,
+            numColumns > 1 && styles.widePadding,
+            { paddingBottom: LIST_BOTTOM_PADDING + tabBarInset },
+          ]}
           renderItem={({ item }) => (
             <View>
               <Text style={styles.sectionHeader}>{item.organizationId}</Text>
@@ -209,7 +217,7 @@ const styles = StyleSheet.create({
     alignSelf: "center",
   },
   listContent: {
-    paddingBottom: 24,
+    paddingBottom: LIST_BOTTOM_PADDING,
   },
   sectionHeader: {
     fontSize: 11,

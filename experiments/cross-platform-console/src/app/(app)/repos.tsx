@@ -1,15 +1,9 @@
-import { useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { listGitHubRepos } from "~/lib/integrations-api";
+import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
 import { colors } from "~/lib/theme";
 
 /**
@@ -17,6 +11,7 @@ import { colors } from "~/lib/theme";
  * user (`GET /me/github/repos`), with client-side search.
  */
 export default function RepositoriesScreen() {
+  const tabBarInset = useTabBarFloatingInset();
   const [search, setSearch] = useState("");
 
   const { data, isLoading, error } = useQuery({
@@ -24,12 +19,10 @@ export default function RepositoriesScreen() {
     queryFn: ({ signal }) => listGitHubRepos(signal),
   });
 
-  const repos = (data?.repos ?? []).filter((repo) =>
-    repo.fullName.toLowerCase().includes(search.trim().toLowerCase()),
-  );
+  const repos = (data?.repos ?? []).filter((repo) => repo.fullName.toLowerCase().includes(search.trim().toLowerCase()));
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingBottom: tabBarInset }]}>
       <View style={styles.header}>
         <Text style={styles.title}>Repositories</Text>
         <Text style={styles.subtitle}>{data?.repos.length ?? 0} accessible via the GitHub App</Text>
@@ -48,9 +41,7 @@ export default function RepositoriesScreen() {
       {isLoading ? (
         <ActivityIndicator style={styles.centerSelf} color={colors.textMuted} />
       ) : error ? (
-        <Text style={styles.errorText}>
-          {error instanceof Error ? error.message : "Failed to load repositories"}
-        </Text>
+        <Text style={styles.errorText}>{error instanceof Error ? error.message : "Failed to load repositories"}</Text>
       ) : repos.length === 0 ? (
         <Text style={styles.emptyText}>No repositories match.</Text>
       ) : (

@@ -1,29 +1,29 @@
+import type { ListMeChatsResponse, MeChatRow } from "@first-tree/shared";
+import { LegendList } from "@legendapp/list/react-native";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useWindowDimensions } from "react-native";
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
+  type FlatList,
   Platform,
+  Pressable,
   RefreshControl,
   StyleSheet,
-  TextInput,
   Text,
+  TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
-import { LegendList } from "@legendapp/list/react-native";
-import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pressable } from "react-native";
-
-import type { ListMeChatsResponse, MeChatRow } from "@first-tree/shared";
-import { useRouter } from "expo-router";
+import { ChatDetailContent } from "~/components/chat-detail";
+import { ChatListItem } from "~/components/chat-list-item";
+import { QuickActions } from "~/components/quick-actions";
+import { TeamSwitcher } from "~/components/team-switcher";
+import { useAuth } from "~/lib/auth-context";
 import { fetchChatRows, renameChat, setChatEngagement } from "~/lib/chats-api";
 import { getItem, setItem } from "~/lib/storage";
-import { useAuth } from "~/lib/auth-context";
-import { ChatListItem } from "~/components/chat-list-item";
-import { ChatDetailContent } from "~/components/chat-detail";
-import { TeamSwitcher } from "~/components/team-switcher";
-import { QuickActions } from "~/components/quick-actions";
+import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
 import { colors } from "~/lib/theme";
 
 const PAGE_SIZE = 50;
@@ -79,6 +79,7 @@ export default function ChatListScreen() {
   const queryClient = useQueryClient();
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
+  const tabBarInset = useTabBarFloatingInset();
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
   const { user, agentId: selfAgentId } = useAuth();
@@ -146,9 +147,7 @@ export default function ChatListScreen() {
     });
   }, [data]);
 
-  type ListItem =
-    | { kind: "header"; id: string; label: string }
-    | { kind: "chat"; id: string; row: MeChatRow };
+  type ListItem = { kind: "header"; id: string; label: string } | { kind: "chat"; id: string; row: MeChatRow };
 
   // Chats with an open ask for you outrank everything (own section),
   // then pinned chats, then the rest.
@@ -158,8 +157,12 @@ export default function ChatListScreen() {
     const needle = search.trim().toLowerCase();
     if (!needle) return rows;
     return rows.filter((row) =>
-      [row.title, row.description ?? "", row.lastMessagePreview ?? "", ...row.participants.map((p) => p.displayName)]
-        .some((field) => field.toLowerCase().includes(needle)),
+      [
+        row.title,
+        row.description ?? "",
+        row.lastMessagePreview ?? "",
+        ...row.participants.map((p) => p.displayName),
+      ].some((field) => field.toLowerCase().includes(needle)),
     );
   }, [rows, search]);
 
@@ -189,13 +192,19 @@ export default function ChatListScreen() {
   const renameRow = useCallback(
     (row: MeChatRow) => {
       if (Platform.OS !== "ios") return; // Alert.prompt is iOS-only in this experiment
-      Alert.prompt("Rename chat", undefined, (text: string) => {
-        const topic = text?.trim();
-        if (!topic) return;
-        void renameChat(row.chatId, topic).then(() =>
-          queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] }),
-        );
-      }, undefined, row.title);
+      Alert.prompt(
+        "Rename chat",
+        undefined,
+        (text: string) => {
+          const topic = text?.trim();
+          if (!topic) return;
+          void renameChat(row.chatId, topic).then(() =>
+            queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] }),
+          );
+        },
+        undefined,
+        row.title,
+      );
     },
     [queryClient],
   );
@@ -247,10 +256,7 @@ export default function ChatListScreen() {
       </View>
 
       <View style={styles.filters}>
-        <Pressable
-          onPress={() => setFilter("all")}
-          style={[styles.filter, filter === "all" && styles.filterActive]}
-        >
+        <Pressable onPress={() => setFilter("all")} style={[styles.filter, filter === "all" && styles.filterActive]}>
           <Text style={[styles.filterText, filter === "all" && styles.filterActiveText]}>All</Text>
         </Pressable>
         <Pressable
@@ -281,9 +287,7 @@ export default function ChatListScreen() {
 
       {error && (
         <View style={styles.errorBox}>
-          <Text style={styles.errorText}>
-            {error instanceof Error ? error.message : "Failed to load chats"}
-          </Text>
+          <Text style={styles.errorText}>{error instanceof Error ? error.message : "Failed to load chats"}</Text>
           <Pressable onPress={() => refetch()} style={styles.retryButton}>
             <Text style={styles.retryText}>Retry</Text>
           </Pressable>
@@ -298,6 +302,7 @@ export default function ChatListScreen() {
           persistScrollOffsets();
         }}
         onContentSizeChange={restoreScrollIfPending}
+        contentContainerStyle={{ paddingBottom: tabBarInset }}
         keyExtractor={(item: ListItem) => item.id}
         renderItem={({ item }: { item: ListItem }) =>
           item.kind === "header" ? (
@@ -312,13 +317,7 @@ export default function ChatListScreen() {
           )
         }
         estimatedItemSize={76}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor={colors.textMuted}
-          />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.textMuted} />}
         ListEmptyComponent={
           !isLoading && listItems.length === 0 ? (
             <Text style={styles.empty}>
@@ -338,10 +337,7 @@ export default function ChatListScreen() {
         {listPane}
         <View style={styles.detailPane}>
           {selectedChatId ? (
-            <ChatDetailContent
-              chatId={selectedChatId}
-              showBack={false}
-            />
+            <ChatDetailContent chatId={selectedChatId} showBack={false} />
           ) : (
             <View style={styles.emptyPane}>
               <Text style={styles.emptyPaneText}>Select a conversation</Text>

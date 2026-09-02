@@ -1,6 +1,7 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { Redirect, Tabs } from "expo-router";
+import { Redirect } from "expo-router";
+import { Tabs } from "expo-router/js-tabs";
 import { useMemo } from "react";
 import type { ColorValue } from "react-native";
 import { ActivityIndicator, StyleSheet, Text, useWindowDimensions, View } from "react-native";
@@ -76,7 +77,13 @@ export default function AppLayout() {
           tabBarStyle: {
             backgroundColor: GlassView ? "transparent" : colors.bg,
             borderTopColor: colors.border,
-            ...(isWide ? { borderRightWidth: StyleSheet.hairlineWidth, borderTopWidth: 0 } : {}),
+            // Apple's own tab bars float above the content rather than
+            // docking in the layout flow, so the timeline scrolls edge to
+            // edge and shows through the glass. Screens reserve the matching
+            // bottom inset via useTabBarFloatingInset(). The wide sidebar
+            // rail stays docked — it is this app's own layout, not a system
+            // tab bar, so there is nothing native to match here.
+            ...(isWide ? { borderRightWidth: StyleSheet.hairlineWidth, borderTopWidth: 0 } : { position: "absolute" }),
           },
           tabBarBackground: GlassView
             ? () => <GlassView style={StyleSheet.absoluteFill} glassEffectStyle="regular" colorScheme="dark" />

@@ -1,10 +1,12 @@
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import type { MeChatRow } from "@first-tree/shared";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
-
-import type { MeChatRow } from "@first-tree/shared";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { fetchChatRows } from "~/lib/chats-api";
+import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
 import { colors } from "~/lib/theme";
+
+const CONTENT_BOTTOM_PADDING = 32;
 
 /**
  * Attention — one aggregated surface for everything needing the user:
@@ -13,6 +15,7 @@ import { colors } from "~/lib/theme";
  */
 export default function AttentionScreen() {
   const router = useRouter();
+  const tabBarInset = useTabBarFloatingInset();
   const { data, isLoading } = useQuery({
     queryKey: ["me", "chats", "list", "all"],
     queryFn: ({ signal }) => fetchChatRows("all", signal),
@@ -23,18 +26,18 @@ export default function AttentionScreen() {
   const openAsks = rows.filter((r) => r.openRequestCount > 0);
   const unread = rows.filter((r) => r.openRequestCount === 0 && r.unreadMentionCount > 0);
 
-  const openChat = (chatId: string) =>
-    router.push({ pathname: `/chat/${chatId}` } as never);
+  const openChat = (chatId: string) => router.push({ pathname: `/chat/${chatId}` } as never);
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={[styles.content, { paddingBottom: CONTENT_BOTTOM_PADDING + tabBarInset }]}
+    >
       <Text style={styles.title}>Needs you</Text>
 
       {isLoading && <Text style={styles.hint}>Loading…</Text>}
 
-      {!isLoading && rows.length === 0 && (
-        <Text style={styles.hint}>Nothing needs you right now.</Text>
-      )}
+      {!isLoading && rows.length === 0 && <Text style={styles.hint}>Nothing needs you right now.</Text>}
 
       {openAsks.length > 0 && (
         <>
@@ -62,20 +65,9 @@ export default function AttentionScreen() {
   );
 }
 
-function AttentionRow({
-  row,
-  badge,
-  onPress,
-}: {
-  row: MeChatRow;
-  badge: string;
-  onPress: () => void;
-}) {
+function AttentionRow({ row, badge, onPress }: { row: MeChatRow; badge: string; onPress: () => void }) {
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [styles.card, pressed && styles.pressed]}
-    >
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
       <View style={styles.badge}>
         <Text style={styles.badgeText}>{badge}</Text>
       </View>
@@ -100,7 +92,7 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingTop: 48,
-    paddingBottom: 32,
+    paddingBottom: CONTENT_BOTTOM_PADDING,
   },
   title: {
     fontSize: 24,
