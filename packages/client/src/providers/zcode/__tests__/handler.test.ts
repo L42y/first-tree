@@ -434,7 +434,7 @@ describe("ZCode production turn handler", () => {
       .filter((message): message is string => typeof message === "string");
     expect(providerEvents.join("\n")).toContain("provider_failure_terminal");
     expect(providerEvents.join("\n")).toContain('"category":"credential"');
-    expect(providerEvents.join("\n")).toContain("zcode login");
+    expect(providerEvents.join("\n")).toContain("`/node /managed/zcode.cjs login`");
     expect(providerEvents.join("\n")).toContain("provider_credential_required");
     expect(token.retry).not.toHaveBeenCalled();
     expect(token.complete).toHaveBeenCalledWith(

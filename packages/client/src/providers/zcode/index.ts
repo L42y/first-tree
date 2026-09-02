@@ -43,7 +43,7 @@ import { consumedErrorOutcome } from "../handlers/turn-settlement.js";
 import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";
 import { buildZcodeTurnArgs, resolveZcodeRuntimeBinary, type ZcodeRuntimeBinaryResolution } from "./binary.js";
 import { parseZcodeJsonOutput } from "./json.js";
-import { officialRuntimeLabel } from "./official-runtime.js";
+import { officialRuntimeLabel, officialRuntimeLoginCommand } from "./official-runtime.js";
 
 export const ZCODE_PENDING_SESSION_PREFIX = "zcode-pending-";
 const DEFAULT_TURN_TIMEOUT_MS = 20 * 60_000;
@@ -479,7 +479,10 @@ export const createZcodeHandler: HandlerFactory = (config) => {
   }): Promise<boolean> {
     const attemptKey = deliveryAttemptKey(input.sessionCtx, input.messages);
     const replaySafety = input.sawProviderActivity ? "pre_visible" : "pre_provider";
-    const displayMessage = isAuthError(input.failure) ? formatAuthHint("zcode", input.failure) : input.failure;
+    const zcodeLoginCommand = binary?.ok ? officialRuntimeLoginCommand(binary) : undefined;
+    const displayMessage = isAuthError(input.failure)
+      ? formatAuthHint("zcode", input.failure, { loginCommand: zcodeLoginCommand })
+      : input.failure;
     const attempt = new ProviderAttempt({
       provider: runtimeProvider,
       scope: "provider_turn",

@@ -42,6 +42,14 @@ function testContract(runtime: Buffer, artifact: Buffer): OfficialZcodeRuntimeCo
   };
 }
 
+function validArtifact(runtime: Buffer): Buffer {
+  return Buffer.concat([
+    Buffer.from("!<arch>\n"),
+    arMember("debian-binary", Buffer.from("1")),
+    arMember("data.tar.xz", runtime),
+  ]);
+}
+
 async function makeRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "ft-zcode-official-"));
   roots.push(root);
@@ -62,6 +70,8 @@ describe("ensureOfficialZcodeRuntime", () => {
     const first = await ensureOfficialZcodeRuntime({
       cacheRoot,
       contract: testContract(runtime, artifact),
+      platform: "linux",
+      arch: "x64",
       fetchImpl: (async () => {
         calls.fetch += 1;
         return new Response(artifact, { status: 200 });
@@ -90,6 +100,8 @@ describe("ensureOfficialZcodeRuntime", () => {
     const second = await ensureOfficialZcodeRuntime({
       cacheRoot,
       contract: testContract(runtime, artifact),
+      platform: "linux",
+      arch: "x64",
       fetchImpl: (async () => {
         calls.fetch += 1;
         throw new Error("must use the valid cache");
@@ -109,6 +121,8 @@ describe("ensureOfficialZcodeRuntime", () => {
     const result = await ensureOfficialZcodeRuntime({
       cacheRoot,
       contract: testContract(Buffer.from("expected"), Buffer.from("malicious")),
+      platform: "linux",
+      arch: "x64",
       fetchImpl: (async () => new Response(malicious, { status: 200 })) as typeof fetch,
       runTar: async () => {
         tarCalls += 1;
@@ -123,6 +137,159 @@ describe("ensureOfficialZcodeRuntime", () => {
     await expect(stat(cacheRoot)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("classifies acquisition timeouts and network failures as retryable", async () => {
+    const cacheRoot = join(await makeRoot(), "runtime");
+    const artifact = Buffer.from("stalled-artifact");
+    let requestSignal: AbortSignal | undefined;
+    const stalledBody = {
+      [Symbol.asyncIterator]: () => {
+        let sent = false;
+        return {
+          next: (): Promise<IteratorResult<Uint8Array>> => {
+            if (!sent) {
+              sent = true;
+              return Promise.resolve({ value: new Uint8Array(artifact), done: false });
+            }
+            return new Promise((_, reject) => {
+              requestSignal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
+          },
+        };
+      },
+    };
+    const result = await ensureOfficialZcodeRuntime({
+      cacheRoot,
+      contract: testContract(Buffer.from("runtime"), artifact),
+      platform: "linux",
+      arch: "x64",
+      downloadTimeouts: { connectTimeoutMs: 1_000, bodyIdleTimeoutMs: 20, overallTimeoutMs: 5_000 },
+      fetchImpl: (async (_url, init) => {
+        requestSignal = init?.signal ?? undefined;
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          body: stalledBody,
+          cancel: async () => {},
+        } as unknown as Response;
+      }) as typeof fetch,
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      transient: true,
+      error: expect.stringContaining("download stalled"),
+    });
+    await expect(stat(cacheRoot)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const networkFailure = await ensureOfficialZcodeRuntime({
+      cacheRoot,
+      contract: testContract(Buffer.from("runtime"), artifact),
+      platform: "linux",
+      arch: "x64",
+      fetchImpl: (async () => {
+        throw new Error("connection reset");
+      }) as typeof fetch,
+    });
+    expect(networkFailure).toMatchObject({ ok: false, transient: true });
+  });
+
+  it("coalesces concurrent preparations and never deletes a valid winner", async () => {
+    const runtime = Buffer.from("concurrent-runtime");
+    const artifact = validArtifact(runtime);
+    const cacheRoot = join(await makeRoot(), "runtime");
+    const calls = { fetch: 0, tar: 0 };
+    const options = {
+      cacheRoot,
+      contract: testContract(runtime, artifact),
+      platform: "linux" as const,
+      arch: "x64",
+      fetchImpl: (async () => {
+        calls.fetch += 1;
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+        return new Response(artifact, { status: 200 });
+      }) as typeof fetch,
+      runTar: async (_args: readonly string[], cwd: string) => {
+        calls.tar += 1;
+        const target = join(cwd, "opt/ZCode/resources/glm/zcode.cjs");
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, runtime);
+      },
+    };
+    const [first, second] = await Promise.all([
+      ensureOfficialZcodeRuntime(options),
+      ensureOfficialZcodeRuntime(options),
+    ]);
+    expect(first).toEqual(second);
+    expect(calls).toEqual({ fetch: 1, tar: 1 });
+    expect(first).toMatchObject({ ok: true, runtimePath: join(cacheRoot, "zcode.cjs") });
+  });
+
+  it("waits instead of destroying another process's preparation", async () => {
+    const cacheRoot = join(await makeRoot(), "runtime");
+    await mkdir(cacheRoot, { recursive: true });
+    await writeFile(join(cacheRoot, "unrelated.txt"), "owned by another invocation");
+    const lockPath = `${cacheRoot}.lock`;
+    await mkdir(lockPath);
+    let fetchCalls = 0;
+    const result = await ensureOfficialZcodeRuntime({
+      cacheRoot,
+      contract: testContract(Buffer.from("runtime"), Buffer.from("artifact")),
+      platform: "linux",
+      arch: "x64",
+      lockTimeoutMs: 30,
+      lockPollMs: 5,
+      fetchImpl: (async () => {
+        fetchCalls += 1;
+        throw new Error("must not race the lock owner");
+      }) as typeof fetch,
+    });
+    expect(result).toMatchObject({ ok: false, transient: true });
+    expect(fetchCalls).toBe(0);
+    expect(await readFile(join(cacheRoot, "unrelated.txt"), "utf8")).toBe("owned by another invocation");
+    await rm(lockPath, { recursive: true, force: true });
+  });
+
+  it("restores a valid installation when a new preparation fails", async () => {
+    const runtime = Buffer.from("valid-runtime");
+    const artifact = validArtifact(runtime);
+    const cacheRoot = join(await makeRoot(), "runtime");
+    const validContract = testContract(runtime, artifact);
+    const installed = await ensureOfficialZcodeRuntime({
+      cacheRoot,
+      contract: validContract,
+      platform: "linux",
+      arch: "x64",
+      fetchImpl: (async () => new Response(artifact, { status: 200 })) as typeof fetch,
+      runTar: async (_args, cwd) => {
+        const target = join(cwd, "opt/ZCode/resources/glm/zcode.cjs");
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, runtime);
+      },
+    });
+    expect(installed).toMatchObject({ ok: true });
+
+    const failedContract = testContract(Buffer.from("different-runtime"), artifact);
+    const failed = await ensureOfficialZcodeRuntime({
+      cacheRoot,
+      contract: failedContract,
+      platform: "linux",
+      arch: "x64",
+      fetchImpl: (async () => new Response(artifact, { status: 200 })) as typeof fetch,
+      runTar: async (_args, cwd) => {
+        const target = join(cwd, "opt/ZCode/resources/glm/zcode.cjs");
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, runtime);
+      },
+    });
+    expect(failed).toMatchObject({
+      ok: false,
+      transient: false,
+      error: expect.stringContaining("extracted ZCode runtime size mismatch"),
+    });
+    const manifest = JSON.parse(await readFile(join(cacheRoot, "manifest.json"), "utf8"));
+    expect(manifest.runtimeSha256).toBe(validContract.runtime.sha256);
+  });
+
   it("rejects a malformed ar artifact before invoking tar", async () => {
     const cacheRoot = join(await makeRoot(), "runtime");
     const artifact = Buffer.from("not-an-archive");
@@ -130,6 +297,8 @@ describe("ensureOfficialZcodeRuntime", () => {
     const result = await ensureOfficialZcodeRuntime({
       cacheRoot,
       contract: testContract(Buffer.from("runtime"), artifact),
+      platform: "linux",
+      arch: "x64",
       fetchImpl: (async () => new Response(artifact, { status: 200 })) as typeof fetch,
       runTar: async () => {
         tarCalls += 1;
@@ -149,6 +318,8 @@ describe("ensureOfficialZcodeRuntime", () => {
     const result = await ensureOfficialZcodeRuntime({
       cacheRoot,
       contract: testContract(runtime, artifact),
+      platform: "linux",
+      arch: "x64",
       fetchImpl: (async () => new Response(artifact, { status: 200 })) as typeof fetch,
       runTar: async () => {},
     });
