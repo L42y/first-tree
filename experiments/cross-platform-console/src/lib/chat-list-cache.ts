@@ -1,45 +1,31 @@
-import type { ListMeChatsResponse, MeChatRow } from "@first-tree/shared";
-
-type ChatListProjection = Pick<ListMeChatsResponse, "rows"> & {
-  priorityRows?: Pick<ListMeChatsResponse["priorityRows"], "pinned">;
-  nextCursor?: ListMeChatsResponse["nextCursor"];
-};
+import type { MeChatRow } from "@first-tree/shared";
 
 /**
- * React Query can expose a projection while a page is hydrating or when a cached
- * payload predates `priorityRows`. Cache reducers must tolerate that partial
- * shape instead of crashing the chat during render.
+ * Native chat lists cache fully merged, deduped `MeChatRow[]` pages under
+ * `["me", "chats", "list", ...]`. Reducers operate on rows so every filter,
+ * engagement view, and tab badge projection stays consistent.
  */
-function patchChatListProjection(
-  previous: ChatListProjection | undefined,
+function patchChatRows(
+  previous: MeChatRow[] | undefined,
   patchRow: (row: MeChatRow) => MeChatRow,
-): ListMeChatsResponse | undefined {
-  if (!previous) return undefined;
-
-  return {
-    ...previous,
-    priorityRows: { pinned: (previous.priorityRows?.pinned ?? []).map(patchRow) },
-    rows: (previous.rows ?? []).map(patchRow),
-    nextCursor: previous.nextCursor ?? null,
-  };
+): MeChatRow[] | undefined {
+  if (!previous) return previous;
+  return previous.map(patchRow);
 }
 
-export function markChatRowsRead(
-  previous: ChatListProjection | undefined,
-  chatId: string,
-): ListMeChatsResponse | undefined {
-  return patchChatListProjection(previous, (row) =>
+export function clearChatUnreadRows(previous: MeChatRow[] | undefined, chatId: string): MeChatRow[] | undefined {
+  return patchChatRows(previous, (row) =>
     row.chatId === chatId ? { ...row, unreadMentionCount: 0, chatHasExplicitMentionToMe: false } : row,
   );
 }
 
-export function patchChatListActivity(
-  previous: ChatListProjection | undefined,
+export function patchChatRowActivity(
+  previous: MeChatRow[] | undefined,
   chatId: string,
   preview: string,
   activityAt: string,
-): ListMeChatsResponse | undefined {
-  return patchChatListProjection(previous, (row) => {
+): MeChatRow[] | undefined {
+  return patchChatRows(previous, (row) => {
     if (row.chatId !== chatId) return row;
 
     return {
@@ -51,4 +37,12 @@ export function patchChatListActivity(
       activityAt,
     };
   });
+}
+
+/**
+ * Guards reloads from a build whose optimistic reducer briefly transformed
+ * row arrays into paginated-projection objects.
+ */
+export function asChatRows(value: unknown): MeChatRow[] {
+  return Array.isArray(value) ? value : [];
 }

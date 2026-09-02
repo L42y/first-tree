@@ -1,10 +1,9 @@
 import type { MeChatRow } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 
-import { markChatRowsRead, patchChatListActivity } from "../chat-list-cache";
+import { asChatRows, clearChatUnreadRows, patchChatRowActivity } from "../chat-list-cache";
 
 const chatId = "chat-1";
-
 type TestRow = Pick<MeChatRow, "chatId" | "unreadMentionCount" | "chatHasExplicitMentionToMe">;
 
 function row(overrides: Partial<TestRow> = {}) {
@@ -16,41 +15,35 @@ function row(overrides: Partial<TestRow> = {}) {
 }
 
 describe("chat list cache reducers", () => {
-  it("preserves an existing pinned projection while marking reads", () => {
-    const previous = {
-      priorityRows: { pinned: [row()] },
-      rows: [row({ chatId: "chat-2" })],
-      nextCursor: null,
-    };
+  it("clears unread state only for the target chat in row arrays", () => {
+    const rows = [row(), row({ chatId: "chat-2" })];
 
-    expect(markChatRowsRead(previous, chatId)).toEqual({
-      priorityRows: { pinned: [{ ...row(), unreadMentionCount: 0, chatHasExplicitMentionToMe: false }] },
-      rows: [row({ chatId: "chat-2" })],
-      nextCursor: null,
-    });
+    expect(clearChatUnreadRows(rows, chatId)).toEqual([
+      { ...row(), unreadMentionCount: 0, chatHasExplicitMentionToMe: false },
+      row({ chatId: "chat-2" }),
+    ]);
   });
 
-  it("tolerates a legacy cache without priorityRows", () => {
-    expect(markChatRowsRead({ rows: [row()], nextCursor: null }, chatId)).toEqual({
-      priorityRows: { pinned: [] },
-      rows: [{ ...row(), unreadMentionCount: 0, chatHasExplicitMentionToMe: false }],
-      nextCursor: null,
-    });
-  });
+  it("updates activity without changing other rows", () => {
+    const updated = patchChatRowActivity([row(), row({ chatId: "chat-2" })], chatId, "hello", "2026-09-02T00:00:00Z");
 
-  it("updates activity without requiring priorityRows", () => {
-    const updated = patchChatListActivity({ rows: [row()], nextCursor: null }, chatId, "hello", "2026-09-02T00:00:00Z");
-
-    expect(updated?.rows[0]).toMatchObject({
+    expect(updated?.[0]).toMatchObject({
       unreadMentionCount: 0,
       chatHasExplicitMentionToMe: false,
       lastMessagePreview: "hello",
       activityAt: "2026-09-02T00:00:00Z",
     });
+    expect(updated?.[1]).toEqual(row({ chatId: "chat-2" }));
+  });
+
+  it("normalizes a corrupted legacy projection without crashing consumers", () => {
+    expect(asChatRows({ priorityRows: { pinned: [] }, rows: [] })).toEqual([]);
+    expect(asChatRows([row()])).toHaveLength(1);
+    expect(asChatRows(undefined)).toEqual([]);
   });
 
   it("passes through an absent cache", () => {
-    expect(markChatRowsRead(undefined, chatId)).toBeUndefined();
-    expect(patchChatListActivity(undefined, chatId, "hello", "2026-09-02T00:00:00Z")).toBeUndefined();
+    expect(clearChatUnreadRows(undefined, chatId)).toBeUndefined();
+    expect(patchChatRowActivity(undefined, chatId, "hello", "2026-09-02T00:00:00Z")).toBeUndefined();
   });
 });

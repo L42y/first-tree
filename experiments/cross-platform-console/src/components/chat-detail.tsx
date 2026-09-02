@@ -1,4 +1,4 @@
-import type { ChatDetail, ListMeChatsResponse, Message } from "@first-tree/shared";
+import type { ChatDetail, MeChatRow, Message } from "@first-tree/shared";
 import { extractMentions } from "@first-tree/shared";
 import { type InfiniteData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePathname, useRouter } from "expo-router";
@@ -21,7 +21,7 @@ import { LiveMarkdownInput, type LiveMarkdownInputHandle } from "~/components/li
 import { MessageCard } from "~/components/message-card";
 import { ASK_MODAL_ROUTE, fetchOpenRequests, parseAskRequest } from "~/lib/ask";
 import { useAuth } from "~/lib/auth-context";
-import { markChatRowsRead, patchChatListActivity } from "~/lib/chat-list-cache";
+import { clearChatUnreadRows, patchChatRowActivity } from "~/lib/chat-list-cache";
 import {
   countUnreadMessages,
   findFirstUnreadIndex,
@@ -169,8 +169,8 @@ export function ChatDetailContent({
 
       // Clear the cached badge immediately so returning to Chats does not
       // flash the old unread state while the authoritative refresh is in flight.
-      queryClient.setQueriesData<ListMeChatsResponse>({ queryKey: ["me", "chats", "list"] }, (previous) =>
-        markChatRowsRead(previous, chatId),
+      queryClient.setQueriesData<MeChatRow[]>({ queryKey: ["me", "chats", "list"] }, (previous) =>
+        clearChatUnreadRows(previous, chatId),
       );
       void markMeChatRead(chatId).then(() => {
         void queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
@@ -205,8 +205,8 @@ export function ChatDetailContent({
     // The chat can receive a message while it is open. Mark that arrival read
     // immediately and clear cached list badges; visibility of the unread pill
     // is driven by the local scroll watermark until the user reaches it.
-    queryClient.setQueriesData<ListMeChatsResponse>({ queryKey: ["me", "chats", "list"] }, (previous) =>
-      markChatRowsRead(previous, chatId),
+    queryClient.setQueriesData<MeChatRow[]>({ queryKey: ["me", "chats", "list"] }, (previous) =>
+      clearChatUnreadRows(previous, chatId),
     );
     void markMeChatRead(chatId).then(() => {
       void queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
@@ -465,8 +465,8 @@ export function ChatDetailContent({
     );
     // The list row is a projection of the server-side chat. Mirror the same
     // fields optimistically so returning to Chats never shows stale content.
-    queryClient.setQueriesData<ListMeChatsResponse>({ queryKey: ["me", "chats", "list"] }, (previous) =>
-      patchChatListActivity(previous, chatId, text, optimisticAt),
+    queryClient.setQueriesData<MeChatRow[]>({ queryKey: ["me", "chats", "list"] }, (previous) =>
+      patchChatRowActivity(previous, chatId, text, optimisticAt),
     );
     setMessage("");
     setCaret(0);
@@ -481,8 +481,8 @@ export function ChatDetailContent({
       queryClient.setQueryData<MessagesCache>(messagesQueryKey, (previous) =>
         patchFirstMessagePage(previous, (items) => items.map((item) => (item.id === optimisticId ? saved : item))),
       );
-      queryClient.setQueriesData<ListMeChatsResponse>({ queryKey: ["me", "chats", "list"] }, (previous) =>
-        patchChatListActivity(previous, chatId, text, saved.createdAt),
+      queryClient.setQueriesData<MeChatRow[]>({ queryKey: ["me", "chats", "list"] }, (previous) =>
+        patchChatRowActivity(previous, chatId, text, saved.createdAt),
       );
       await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
       await queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });

@@ -6,6 +6,7 @@ import { ActivityIndicator, StyleSheet, Text, useWindowDimensions, View } from "
 import { useTheme } from "tamagui";
 
 import { useAuth } from "~/lib/auth-context";
+import { asChatRows } from "~/lib/chat-list-cache";
 import { fetchChatRows } from "~/lib/chats-api";
 import { useOrgRealtime } from "~/lib/realtime";
 import { colors } from "~/lib/theme";
@@ -36,6 +37,7 @@ export default function AppLayout() {
   const chatsQuery = useQuery({
     queryKey: ["me", "chats", "list", "all"],
     queryFn: ({ signal }) => fetchChatRows("all", signal),
+    select: asChatRows,
     placeholderData: keepPreviousData,
     refetchInterval: 30_000,
     enabled: meLoaded && isAuthenticated,
