@@ -1,11 +1,10 @@
 import type { MeChatRow } from "@first-tree/shared";
-import { LegendList } from "@legendapp/list/react-native";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  type FlatList,
+  FlatList,
   Platform,
   Pressable,
   RefreshControl,
@@ -61,8 +60,10 @@ function persistScrollOffsets(): void {
   }, 500);
 }
 
+type ListItem = { kind: "header"; id: string; label: string } | { kind: "chat"; id: string; row: MeChatRow };
+
 export default function ChatListScreen() {
-  const listRef = useRef<FlatList<never> | null>(null);
+  const listRef = useRef<FlatList<ListItem> | null>(null);
   const restorePendingRef = useRef(true);
   const queryClient = useQueryClient();
   const { width } = useWindowDimensions();
@@ -99,13 +100,7 @@ export default function ChatListScreen() {
     restorePendingRef.current = false;
     const saved = scrollOffsetMap[`${view}:${filter}`];
     if (!saved || saved <= 4) return;
-    requestAnimationFrame(() =>
-      (
-        listRef.current as unknown as {
-          scrollToOffset: (o: { offset: number; animated: boolean }) => void;
-        }
-      )?.scrollToOffset({ offset: saved, animated: false }),
-    );
+    requestAnimationFrame(() => listRef.current?.scrollToOffset({ offset: saved, animated: false }));
   }, [scrollReady, view, filter]);
 
   // Hydration usually resolves after the list has already sized itself, so
@@ -135,8 +130,6 @@ export default function ChatListScreen() {
     }
     return out;
   }, [data]);
-
-  type ListItem = { kind: "header"; id: string; label: string } | { kind: "chat"; id: string; row: MeChatRow };
 
   // Chats with an open ask for you outrank everything (own section),
   // then pinned chats, then the rest.
@@ -286,10 +279,10 @@ export default function ChatListScreen() {
 
   const listPane = (
     <View style={[styles.container, isWide && styles.listPane]}>
-      <LegendList
-        ref={listRef as never}
+      <FlatList
+        ref={listRef}
         data={listItems}
-        onScroll={(e: { nativeEvent: { contentOffset: { y: number } } }) => {
+        onScroll={(e) => {
           scrollOffsetMap[`${view}:${filter}`] = e.nativeEvent.contentOffset.y;
           persistScrollOffsets();
         }}
@@ -308,7 +301,6 @@ export default function ChatListScreen() {
             />
           )
         }
-        estimatedItemSize={76}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.textMuted} />}
         ListHeaderComponent={listHeader}
         ListEmptyComponent={listEmpty}
