@@ -1577,6 +1577,39 @@ export class SessionRuntime {
     return parsed.data;
   }
 
+  /**
+   * Turn liveness for the D-axis, derived from the session events a provider
+   * emits *inside* a turn.
+   *
+   * Raw provider activity is deliberately NOT the signal. `recordProviderActivity`
+   * is broader than turn liveness by design — the Codex app-server samples it
+   * above its own thread/turn filter, so a late `thread/tokenUsage/updated` for
+   * an already-closed turn reaches it and is then recorded as historical usage
+   * or buffered, without ever producing a `turn_end`. Treating that sample as a
+   * turn start would strand `working` on an idle chat, kept fresh by the
+   * re-affirm loop until an unrelated turn ends or the session is suspended.
+   *
+   * Assistant text, thinking, and tool calls are only emitted from a provider's
+   * in-turn path, so they are self-proving evidence that a turn is open; the
+   * out-of-turn traffic that caused the problem (`token_usage`,
+   * `context_tree_usage`, runtime `error`) is excluded.
+   *
+   * This is the floor, not the primary signal: a provider that reports its own
+   * turn boundary through `noteTurnStart` lights up at the boundary instead,
+   * which matters because the head of a turn is model latency with nothing
+   * displayable in it yet. A provider that reports neither stays idle, which
+   * is the correct failure direction.
+   */
+  private noteTurnLivenessFromEvent(chatId: string, event: SessionEvent): void {
+    if (event.kind === "turn_end") {
+      this.projection.noteProviderTurnEnd(chatId);
+      return;
+    }
+    if (event.kind === "assistant_text" || event.kind === "thinking" || event.kind === "tool_call") {
+      this.projection.noteProviderTurnStart(chatId);
+    }
+  }
+
   private captureRuntimeFailureNotice(
     chatId: string,
     event: SessionEvent,
@@ -3255,6 +3288,14 @@ export class SessionRuntime {
           entry.lastActivity = Date.now();
         }
       },
+      noteTurnStart: () => {
+        if (mutationValid && !mutationValid()) return;
+        this.projection.noteProviderTurnStart(chatId);
+      },
+      noteTurnEnd: () => {
+        if (mutationValid && !mutationValid()) return;
+        this.projection.noteProviderTurnEnd(chatId);
+      },
       emitEvent: (event) => {
         // During graceful drain, only structured terminal provider-failure events
         // may cross the settlement lease (durable notice capture). All other
@@ -3267,6 +3308,7 @@ export class SessionRuntime {
           return;
         }
         if (mutationValid && !mutationValid()) return;
+        this.noteTurnLivenessFromEvent(chatId, event);
         this.config.onSessionEvent?.(chatId, event);
         if (mutationValid && !mutationValid()) return;
         this.captureRuntimeFailureNotice(chatId, event, mutationValid);
@@ -3275,6 +3317,11 @@ export class SessionRuntime {
         if (mutationValid && !mutationValid()) {
           return Promise.reject(new Error("route transition invalidated"));
         }
+        // `turn_end` also reaches the server through this confirmed channel
+        // (the Codex landing trial awaits it), so turn liveness must clear
+        // here too or that turn would stay `working` until the session is
+        // suspended.
+        this.noteTurnLivenessFromEvent(chatId, event);
         return this.confirmSessionEventOrThrow(chatId, event, mutationValid);
       },
       forwardResult: (text) => {
