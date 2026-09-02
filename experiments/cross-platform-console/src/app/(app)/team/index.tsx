@@ -3,7 +3,7 @@ import { useRouter } from "expo-router";
 import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  FlatList,
+  Animated,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -80,7 +80,7 @@ export default function TeamScreen() {
 
   const listPane = (
     <View style={[styles.container, styles.teamPane]}>
-      <FlatList
+      <Animated.FlatList
         data={grouped}
         keyExtractor={(g) => g.organizationId}
         onScroll={onScroll}

@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  FlatList,
+  Animated,
+  type FlatList,
   Platform,
   Pressable,
   RefreshControl,
@@ -289,7 +290,7 @@ export default function ChatListScreen() {
 
   const listPane = (
     <View style={[styles.container, isWide && styles.listPane]}>
-      <FlatList
+      <Animated.FlatList
         ref={listRef}
         data={listItems}
         onScroll={onScroll}

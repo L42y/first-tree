@@ -2,9 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -45,7 +45,7 @@ export default function ContextScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView
+      <Animated.ScrollView
         onScroll={onScroll}
         scrollEventThrottle={16}
         contentContainerStyle={[
@@ -104,7 +104,7 @@ export default function ContextScreen() {
             );
           })
         )}
-      </ScrollView>
+      </Animated.ScrollView>
       <CollapsingHeaderBar title="Context" scrollY={scrollY} />
     </View>
   );

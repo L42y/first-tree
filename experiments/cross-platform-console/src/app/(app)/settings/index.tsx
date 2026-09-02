@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Avatar } from "~/components/avatar";
 import { CollapsingHeaderBar, LargeTitle, useCollapsingHeaderScroll } from "~/components/collapsing-header";
@@ -53,7 +53,7 @@ export default function SettingsScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView
+      <Animated.ScrollView
         onScroll={onScroll}
         scrollEventThrottle={16}
         contentContainerStyle={[
@@ -154,7 +154,7 @@ export default function SettingsScreen() {
         >
           <Text style={styles.logoutText}>Log out</Text>
         </Pressable>
-      </ScrollView>
+      </Animated.ScrollView>
       <CollapsingHeaderBar title="Settings" scrollY={scrollY} />
     </View>
   );

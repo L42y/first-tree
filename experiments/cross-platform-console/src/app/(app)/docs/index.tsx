@@ -1,6 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import {
+  ActivityIndicator,
+  Animated,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { CollapsingHeaderBar, LargeTitle, useCollapsingHeaderScroll } from "~/components/collapsing-header";
 import { MarkdownText } from "~/components/markdown-text";
@@ -68,7 +77,7 @@ export default function DocsScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView
+      <Animated.ScrollView
         onScroll={onScroll}
         scrollEventThrottle={16}
         contentContainerStyle={[
@@ -113,7 +122,7 @@ export default function DocsScreen() {
             </Pressable>
           ))
         )}
-      </ScrollView>
+      </Animated.ScrollView>
       <CollapsingHeaderBar title="Docs" scrollY={scrollY} />
     </View>
   );
