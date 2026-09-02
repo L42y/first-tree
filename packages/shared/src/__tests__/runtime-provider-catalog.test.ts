@@ -199,6 +199,9 @@ describe("runtime provider identity + catalog completeness", () => {
     expect(runtimeProviderPreferredCredentialProse("deepseek-harness")).toContain("Mark as sensitive");
     expect(runtimeProviderPreferredCredentialProse("amp")).toBeNull();
     expect(runtimeProviderLoginCommand("amp")).toBe("amp login");
+    expect(runtimeProviderLoginCommand("zcode")).toBe(
+      `node "$HOME/.cache/first-tree/zcode/official/3.10.2-6414/zcode.cjs" login`,
+    );
     expect(KIMI_NPM_PACKAGE).toBe("@moonshot-ai/kimi-code");
     expect(RUNTIME_PROVIDER_CATALOG["kimi-code"].install).toEqual({
       kind: "npm",

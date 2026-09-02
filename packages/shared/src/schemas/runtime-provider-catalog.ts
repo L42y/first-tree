@@ -39,6 +39,7 @@ export const ZCODE_OFFICIAL_ARTIFACT_BYTES = 146_822_580;
 export const ZCODE_OFFICIAL_RUNTIME_VERSION = "0.16.5";
 export const ZCODE_OFFICIAL_RUNTIME_SHA256 = "3597160465b67da248fa3fb919920ca30d4e093003a4d70cde2a2e33903cbabc";
 export const ZCODE_OFFICIAL_RUNTIME_BYTES = 12_557_830;
+export const ZCODE_OFFICIAL_DEFAULT_LOGIN_COMMAND = `node "$HOME/.cache/first-tree/zcode/official/${ZCODE_OFFICIAL_PACKAGE_VERSION}/zcode.cjs" login`;
 export const ZCODE_MINIMUM_NODE_VERSION = "22.19.0";
 /**
  * Remediation package list when a Client/CLI install is missing the bundled
@@ -248,7 +249,7 @@ export const RUNTIME_PROVIDER_CATALOG = {
     displayOrder: 85,
     selectionPriority: null,
     install: { kind: "managed-official-runtime", platform: ZCODE_OFFICIAL_PLATFORM },
-    loginSteps: ["zcode login"],
+    loginSteps: [ZCODE_OFFICIAL_DEFAULT_LOGIN_COMMAND],
     authRecovery: { kind: "host" },
     authOwnerLabel: "Z.AI",
   },
