@@ -1,9 +1,7 @@
 import type { ChatDetail, ChatTokenUsage, MeChatRow, Message } from "@first-tree/shared";
 import { extractMentions } from "@first-tree/shared";
 import { type InfiniteData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { GlassViewProps } from "expo-glass-effect";
 import { usePathname, useRouter } from "expo-router";
-import type { ComponentType } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -43,6 +41,7 @@ import {
   type PaginatedMessages,
   sendChatMessage,
 } from "~/lib/chats-api";
+import { loadLiquidGlass } from "~/lib/liquid-glass";
 import {
   buildMentionCandidates,
   buildMentionInsert,
@@ -65,27 +64,6 @@ type TimelineItem =
   | { kind: "divider"; key: string; count: number };
 
 type MessagesCache = InfiniteData<PaginatedMessages, string | undefined>;
-
-type LiquidGlassModule = {
-  GlassView: ComponentType<GlassViewProps>;
-  isGlassEffectAPIAvailable?: () => boolean;
-  isLiquidGlassAvailable?: () => boolean;
-};
-
-/**
- * Resolve Liquid Glass lazily so an older dev client without the native module
- * falls back to an opaque card instead of crashing while its JS is reloaded.
- */
-function loadLiquidGlass(): LiquidGlassModule | null {
-  if (Platform.OS !== "ios") return null;
-  try {
-    const glass = require("expo-glass-effect") as LiquidGlassModule;
-    if (!glass.isGlassEffectAPIAvailable?.() || !glass.isLiquidGlassAvailable?.()) return null;
-    return glass;
-  } catch {
-    return null;
-  }
-}
 
 function patchFirstMessagePage(
   previous: MessagesCache | undefined,
@@ -168,6 +146,13 @@ export function ChatDetailContent({
     queryKey: ["chats", chatId],
     queryFn: () => getChat(chatId),
   });
+  // Supervisor / admin views reach a chat via managed agents and have no
+  // chat_membership row of their own — firing markRead for them would insert
+  // a chat_user_state row the conversation-list query (inner-joined on
+  // chat_membership) never reads, leaving a permanent dead row. Matches web's
+  // canMarkRead gate in chat-by-id.tsx.
+  const canMarkRead = chatQuery.data != null && chatQuery.data.viewerMembershipKind !== null;
+  const markedReadChatIdRef = useRef<string | null>(null);
 
   // Newest-first pages from the server; flattened oldest→newest for display.
   // "Load older" fetches previous pages via the cursor.
@@ -217,22 +202,30 @@ export function ChatDetailContent({
       setFrozenUnreadAnchorId(previousState?.latestKnownMessageId ?? null);
       readLoadedRef.current = true;
       setReadReady(true);
-
-      // Clear the cached badge immediately so returning to Chats does not
-      // flash the old unread state while the authoritative refresh is in flight.
-      queryClient.setQueriesData<MeChatRow[]>({ queryKey: ["me", "chats", "list"] }, (previous) =>
-        clearChatUnreadRows(previous, chatId),
-      );
-      void markMeChatRead(chatId).then(() => {
-        void queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
-      });
     });
 
     return () => {
       active = false;
       flushReadState();
     };
-  }, [chatId, flushReadState, queryClient]);
+  }, [chatId, flushReadState]);
+
+  // Mark read once membership is confirmed and the local read-state has
+  // loaded. Deduped per chatId like web's markedChatIdRef so a refetch of
+  // chatQuery does not re-fire the POST.
+  useEffect(() => {
+    if (!readReady || !canMarkRead) return;
+    if (markedReadChatIdRef.current === chatId) return;
+    markedReadChatIdRef.current = chatId;
+    // Clear the cached badge immediately so returning to Chats does not
+    // flash the old unread state while the authoritative refresh is in flight.
+    queryClient.setQueriesData<MeChatRow[]>({ queryKey: ["me", "chats", "list"] }, (previous) =>
+      clearChatUnreadRows(previous, chatId),
+    );
+    void markMeChatRead(chatId).then(() => {
+      void queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
+    });
+  }, [chatId, canMarkRead, readReady, queryClient]);
 
   const messageCount = (messagesQuery.data?.pages ?? []).reduce((total, page) => total + page.items.length, 0);
   useEffect(() => {
@@ -248,7 +241,7 @@ export function ChatDetailContent({
 
   useEffect(() => {
     latestKnownRef.current = latestServerMessageId;
-    if (!readReady) return;
+    if (!readReady || !canMarkRead) return;
     if (!latestServerMessageId) return;
     if (serverSyncedRef.current === latestServerMessageId) return;
     serverSyncedRef.current = latestServerMessageId;
@@ -262,7 +255,7 @@ export function ChatDetailContent({
     void markMeChatRead(chatId).then(() => {
       void queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
     });
-  }, [chatId, latestServerMessageId, queryClient, readReady]);
+  }, [chatId, latestServerMessageId, queryClient, readReady, canMarkRead]);
 
   const selfSenderIds = useMemo(
     () => [memberId, user?.id].filter((id): id is string => Boolean(id)),
@@ -745,6 +738,15 @@ export function ChatDetailContent({
         }}
         onViewableItemsChanged={handleViewableItemsChanged}
         viewabilityConfig={{ itemVisiblePercentThreshold: 98 }}
+        onScrollToIndexFailed={(info) => {
+          // Markdown/card bubbles have dynamic heights, so FlatList's own
+          // length estimate for an unmeasured, off-screen anchor is wrong on
+          // the first attempt. Retry once layout has caught up instead of
+          // leaving the reader wherever that first bad estimate landed.
+          setTimeout(() => {
+            listRef.current?.scrollToIndex({ animated: false, index: info.index, viewPosition: 1 });
+          }, 50);
+        }}
         onContentSizeChange={() => {
           if (!readReady || !pendingScrollRef.current || userScrolledRef.current) return;
           // React Native can emit this callback repeatedly as markdown and

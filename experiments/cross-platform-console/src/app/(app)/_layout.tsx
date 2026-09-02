@@ -1,6 +1,7 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Redirect, Tabs } from "expo-router";
+import { useMemo } from "react";
 import type { ColorValue } from "react-native";
 import { ActivityIndicator, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { useTheme } from "tamagui";
@@ -8,6 +9,7 @@ import { useTheme } from "tamagui";
 import { useAuth } from "~/lib/auth-context";
 import { asChatRows } from "~/lib/chat-list-cache";
 import { fetchChatRows } from "~/lib/chats-api";
+import { loadLiquidGlass } from "~/lib/liquid-glass";
 import { useOrgRealtime } from "~/lib/realtime";
 import { colors } from "~/lib/theme";
 
@@ -31,6 +33,8 @@ export default function AppLayout() {
   const theme = useTheme();
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
+  const liquidGlass = useMemo(loadLiquidGlass, []);
+  const GlassView = liquidGlass?.GlassView;
 
   // Attention badge source for the Chats tab — hooks stay unconditional;
   // fetching is gated on the session instead.
@@ -70,10 +74,13 @@ export default function AppLayout() {
           tabBarActiveTintColor: colors.accent,
           tabBarInactiveTintColor: colors.textMuted,
           tabBarStyle: {
-            backgroundColor: colors.bg,
+            backgroundColor: GlassView ? "transparent" : colors.bg,
             borderTopColor: colors.border,
             ...(isWide ? { borderRightWidth: StyleSheet.hairlineWidth, borderTopWidth: 0 } : {}),
           },
+          tabBarBackground: GlassView
+            ? () => <GlassView style={StyleSheet.absoluteFill} glassEffectStyle="regular" colorScheme="dark" />
+            : undefined,
         }}
       >
         <Tabs.Screen
