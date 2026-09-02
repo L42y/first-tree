@@ -9,7 +9,7 @@ function patchChatRows(
   previous: MeChatRow[] | undefined,
   patchRow: (row: MeChatRow) => MeChatRow,
 ): MeChatRow[] | undefined {
-  if (!previous) return previous;
+  if (!Array.isArray(previous)) return previous;
   return previous.map(patchRow);
 }
 

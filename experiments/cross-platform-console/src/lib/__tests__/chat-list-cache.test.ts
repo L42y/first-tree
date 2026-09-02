@@ -46,4 +46,10 @@ describe("chat list cache reducers", () => {
     expect(clearChatUnreadRows(undefined, chatId)).toBeUndefined();
     expect(patchChatRowActivity(undefined, chatId, "hello", "2026-09-02T00:00:00Z")).toBeUndefined();
   });
+
+  it("leaves an unexpected legacy object for the array guard instead of crashing", () => {
+    const legacy = { rows: [] } as unknown as MeChatRow[];
+    expect(clearChatUnreadRows(legacy, chatId)).toBe(legacy);
+    expect(patchChatRowActivity(legacy, chatId, "hello", "2026-09-02T00:00:00Z")).toBe(legacy);
+  });
 });
