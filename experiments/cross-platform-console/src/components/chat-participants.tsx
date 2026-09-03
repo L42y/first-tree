@@ -1,10 +1,12 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Modal,
+  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -23,6 +25,11 @@ import { reactivateAgent, suspendAgent } from "~/lib/team-api";
 import { colors } from "~/lib/theme";
 import { useAddParticipant, useDirectoryCandidates } from "~/lib/use-add-participant";
 import { useAgentRuntimeSummaries } from "~/lib/use-agent-runtime";
+
+/** How far a downward pull has to travel before releasing dismisses the sheet. */
+const DISMISS_DISTANCE = 80;
+/** Off-screen travel for the dismissal animation. */
+const DISMISS_TRAVEL = 600;
 
 /**
  * Who is in this chat, ordered by who spoke last. Opened from the chat header,
@@ -95,42 +102,89 @@ export function ChatParticipantsSheet({
     [candidates, rosterIds],
   );
 
-  const closeSheet = () => {
+  const closeSheet = useCallback(() => {
     setAdding(false);
     setSearch("");
     addFlow.cancel();
     onClose();
+  }, [addFlow.cancel, onClose]);
+
+  // Pull-to-dismiss without a gesture library, and without stealing the list's
+  // own scrolling: the sheet only follows the finger where a downward drag has
+  // nothing else to do — on the header, or once the list is already at its top
+  // and the pull turns into overscroll.
+  const dragY = useRef(new Animated.Value(0)).current;
+  const settle = useCallback(() => {
+    Animated.spring(dragY, { toValue: 0, useNativeDriver: true, bounciness: 0 }).start();
+  }, [dragY]);
+  const dismiss = useCallback(() => {
+    Animated.timing(dragY, { toValue: DISMISS_TRAVEL, duration: 160, useNativeDriver: true }).start(() => {
+      dragY.setValue(0);
+      closeSheet();
+    });
+  }, [closeSheet, dragY]);
+  useEffect(() => {
+    if (!visible) dragY.setValue(0);
+  }, [visible, dragY]);
+
+  const headerDrag = useMemo(
+    () =>
+      PanResponder.create({
+        // Claim only a clear downward drag, so taps on Add / Done still land.
+        onMoveShouldSetPanResponder: (_event, gesture) => gesture.dy > 4 && gesture.dy > Math.abs(gesture.dx),
+        onPanResponderMove: (_event, gesture) => {
+          if (gesture.dy > 0) dragY.setValue(gesture.dy);
+        },
+        onPanResponderRelease: (_event, gesture) => {
+          if (gesture.dy > DISMISS_DISTANCE || gesture.vy > 0.8) dismiss();
+          else settle();
+        },
+        onPanResponderTerminate: settle,
+      }),
+    [dismiss, dragY, settle],
+  );
+
+  // Wired into every scrollable body: overscroll past the top drags the sheet.
+  const overscrollProps = {
+    scrollEventThrottle: 16,
+    keyboardDismissMode: "on-drag" as const,
+    onScroll: ({ nativeEvent }: { nativeEvent: { contentOffset: { y: number } } }) => {
+      dragY.setValue(Math.max(0, -nativeEvent.contentOffset.y));
+    },
+    onScrollEndDrag: ({ nativeEvent }: { nativeEvent: { contentOffset: { y: number } } }) => {
+      if (nativeEvent.contentOffset.y < -DISMISS_DISTANCE) dismiss();
+      else settle();
+    },
   };
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={closeSheet}>
       <Pressable style={styles.backdrop} onPress={closeSheet} />
-      <View style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
-        <View style={styles.grabber} />
-        <View style={styles.sheetHeader}>
-          <Text style={styles.sheetTitle}>{adding ? "Add participant" : "Participants"}</Text>
-          {!adding && <Text style={styles.sheetCount}>{rows.length}</Text>}
-          <View style={styles.spacer} />
-          {adding ? (
-            <Pressable
-              onPress={() => {
-                setAdding(false);
-                setSearch("");
-                addFlow.cancel();
-              }}
-              hitSlop={8}
-              accessibilityLabel="Back to participants"
-            >
-              <Text style={styles.headerAction}>Done</Text>
-            </Pressable>
-          ) : (
-            <Pressable onPress={() => setAdding(true)} hitSlop={8} accessibilityLabel="Add participant">
-              <Text style={styles.headerAction}>Add</Text>
-            </Pressable>
-          )}
-          <Pressable onPress={closeSheet} hitSlop={8} accessibilityLabel="Close participants">
-            <Ionicons name="close" size={22} color={colors.textSecondary} />
-          </Pressable>
+      <Animated.View style={[styles.sheet, { paddingBottom: insets.bottom + 16, transform: [{ translateY: dragY }] }]}>
+        <View {...headerDrag.panHandlers}>
+          <View style={styles.grabber} />
+          <View style={styles.sheetHeader}>
+            <Text style={styles.sheetTitle}>{adding ? "Add participant" : "Participants"}</Text>
+            {!adding && <Text style={styles.sheetCount}>{rows.length}</Text>}
+            <View style={styles.spacer} />
+            {adding ? (
+              <Pressable
+                onPress={() => {
+                  setAdding(false);
+                  setSearch("");
+                  addFlow.cancel();
+                }}
+                hitSlop={8}
+                accessibilityLabel="Back to participants"
+              >
+                <Text style={styles.headerAction}>Done</Text>
+              </Pressable>
+            ) : (
+              <Pressable onPress={() => setAdding(true)} hitSlop={8} accessibilityLabel="Add participant">
+                <Text style={styles.headerAction}>Add</Text>
+              </Pressable>
+            )}
+          </View>
         </View>
         {addFlow.pending ? (
           <AddParticipantConfirm flow={addFlow} onConfirm={() => void addFlow.confirm()} />
@@ -146,7 +200,7 @@ export function ChatParticipantsSheet({
               autoCorrect={false}
               autoFocus
             />
-            <ScrollView contentContainerStyle={styles.list} keyboardShouldPersistTaps="handled">
+            <ScrollView contentContainerStyle={styles.list} keyboardShouldPersistTaps="handled" {...overscrollProps}>
               {addable.length === 0 ? (
                 <Text style={styles.empty}>
                   {isFetching ? "Searching…" : search ? "Nobody matches that" : "Everyone available is already here"}
@@ -187,7 +241,7 @@ export function ChatParticipantsSheet({
             </ScrollView>
           </>
         ) : (
-          <ScrollView contentContainerStyle={styles.list}>
+          <ScrollView contentContainerStyle={styles.list} {...overscrollProps}>
             {rows.length === 0 ? (
               <Text style={styles.empty}>No participants yet</Text>
             ) : (
@@ -250,7 +304,7 @@ export function ChatParticipantsSheet({
             )}
           </ScrollView>
         )}
-      </View>
+      </Animated.View>
     </Modal>
   );
 }
