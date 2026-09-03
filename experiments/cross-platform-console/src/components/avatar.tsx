@@ -1,4 +1,7 @@
+import { useEffect, useState } from "react";
 import { Image, StyleSheet, Text, View } from "react-native";
+
+import { resolveAvatarUri } from "~/lib/avatar-uri";
 
 /**
  * Avatar for humans and agents (robots), mirroring the web console's
@@ -83,22 +86,40 @@ export function Avatar({
   showKindGlyph?: boolean;
 }) {
   const hue = HUES[resolveAvatarHueIndex(colorToken, seed)];
+  // An avatar URL that fails to load must fall back to the colored initials,
+  // not leave a hole where the person is: a broken image is exactly as
+  // avatar-less as no image at all.
+  const [imageFailed, setImageFailed] = useState(false);
+  useEffect(() => setImageFailed(false), [imageUrl]);
+  // Uploaded avatars arrive as server-relative paths ("/api/v1/agents/…"),
+  // which a browser resolves against its origin and a native Image cannot
+  // resolve at all — those agents rendered as empty circles.
+  const imageUri = resolveAvatarUri(imageUrl);
+  const showImage = Boolean(imageUri) && !imageFailed;
 
   // Clean shape language instead of emoji badges:
   //   human → thin light ring around the avatar
   //   agent → small accent dot bottom-right
+  //
+  // The ring is drawn over the avatar rather than around it. As a border on
+  // the image's own box it ate 2px of every edge — React Native lays borders
+  // out inside the box — so a photo came out clipped and off-center inside a
+  // circle that was smaller than every other avatar in the row.
   const isHuman = kind === "human";
   return (
     <View style={[styles.wrap, { width: size, height: size }]}>
-      <View style={[isHuman ? styles.humanRing : null, { width: size, height: size, borderRadius: 9999 }]}>
-        {imageUrl ? (
-          <Image source={{ uri: imageUrl }} style={[styles.image, { width: size, height: size }]} />
-        ) : (
-          <View style={[styles.disc, { width: size, height: size, backgroundColor: hue }]}>
-            <Text style={[styles.initials, { fontSize: Math.round(size * 0.36) }]}>{initialsFor(name)}</Text>
-          </View>
-        )}
-      </View>
+      {showImage ? (
+        <Image
+          source={{ uri: imageUri as string }}
+          style={[styles.image, { width: size, height: size }]}
+          onError={() => setImageFailed(true)}
+        />
+      ) : (
+        <View style={[styles.disc, { width: size, height: size, backgroundColor: hue }]}>
+          <Text style={[styles.initials, { fontSize: Math.round(size * 0.36) }]}>{initialsFor(name)}</Text>
+        </View>
+      )}
+      {isHuman && <View pointerEvents="none" style={[styles.humanRing, { borderWidth: ringWidth(size) }]} />}
       {showKindGlyph && !isHuman && (
         <View style={[styles.agentDot, { width: Math.max(8, size * 0.22), height: Math.max(8, size * 0.22) }]} />
       )}
@@ -106,10 +127,17 @@ export function Avatar({
   );
 }
 
+/** Ring thickness tracks the avatar so a 24px row chip is not wearing a 40px ring. */
+export function ringWidth(size: number): number {
+  return Math.max(1.5, Math.round(size * 0.055 * 2) / 2);
+}
+
 const styles = StyleSheet.create({
   wrap: {
     position: "relative",
     flexShrink: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
   image: {
     borderRadius: 9999,
@@ -124,9 +152,13 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
   },
   humanRing: {
-    borderWidth: 2,
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    borderRadius: 9999,
     borderColor: "rgba(232,241,245,0.85)",
-    overflow: "hidden",
   },
   agentDot: {
     position: "absolute",
