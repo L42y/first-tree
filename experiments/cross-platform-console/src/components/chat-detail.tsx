@@ -1,3 +1,4 @@
+import Ionicons from "@expo/vector-icons/Ionicons";
 import type { ChatDetail, ChatTokenUsage, MeChatRow, Message } from "@first-tree/shared";
 import { extractMentions } from "@first-tree/shared";
 import { type InfiniteData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -22,8 +23,10 @@ import { AgentMetaLine } from "~/components/agent-meta";
 import { Avatar } from "~/components/avatar";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
 import { ChatParticipantsSheet } from "~/components/chat-participants";
+import { ChatSummaryCard } from "~/components/chat-summary-card";
 import { LiveMarkdownInput, type LiveMarkdownInputHandle } from "~/components/live-markdown-input";
 import { MessageCard } from "~/components/message-card";
+import { RenameChatModal } from "~/components/rename-chat-modal";
 import { ASK_MODAL_ROUTE, fetchOpenRequests, parseAskRequest } from "~/lib/ask";
 import { useAuth } from "~/lib/auth-context";
 import { clearChatUnreadRows, patchChatRowActivity } from "~/lib/chat-list-cache";
@@ -37,12 +40,14 @@ import {
   isAtNewestEdge,
   saveChatReadState,
 } from "~/lib/chat-read-state";
+import { buildChatSummary } from "~/lib/chat-summary";
 import {
   getChat,
   getChatTokenUsage,
   listChatMessages,
   markMeChatRead,
   type PaginatedMessages,
+  renameChat,
   sendChatMessage,
 } from "~/lib/chats-api";
 import { loadLiquidGlass } from "~/lib/liquid-glass";
@@ -374,6 +379,9 @@ export function ChatDetailContent({
     [participantRoster],
   );
   const [participantsOpen, setParticipantsOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  // The agent-authored current-state brief on `chat.description`.
+  const chatSummary = useMemo(() => (chat ? buildChatSummary(chat) : null), [chat]);
 
   // The viewer's own open ask, if any. Scoped server-side to this viewer and
   // independent of the loaded message window, so it is the whole answer to
@@ -744,7 +752,29 @@ export function ChatDetailContent({
             )}
           </View>
         </Pressable>
+        <Pressable
+          onPress={() => setRenameOpen(true)}
+          hitSlop={8}
+          accessibilityLabel="Rename chat"
+          style={styles.headerButton}
+        >
+          <Ionicons name="create-outline" size={20} color={colors.textSecondary} />
+        </Pressable>
       </View>
+
+      <ChatSummaryCard summary={chatSummary} chatId={chatId} />
+
+      <RenameChatModal
+        visible={renameOpen}
+        initialTitle={chat?.topic ?? chat?.title ?? ""}
+        onCancel={() => setRenameOpen(false)}
+        onSubmit={async (topic) => {
+          await renameChat(chatId, topic);
+          await queryClient.invalidateQueries({ queryKey: ["chats", chatId] });
+          void queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
+          setRenameOpen(false);
+        }}
+      />
 
       <ChatParticipantsSheet
         visible={participantsOpen}
@@ -1049,6 +1079,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  headerButton: {
+    padding: 4,
   },
   headerText: {
     flex: 1,
