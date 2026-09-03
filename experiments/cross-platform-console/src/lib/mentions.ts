@@ -136,11 +136,11 @@ export function findActiveMentionTrigger(text: string, caret: number): ActiveMen
  * then name substring. Picker order stays stable instead of following roster
  * database order.
  */
-export function rankMentionCandidates(candidates: readonly MentionCandidate[], query: string): MentionCandidate[] {
+export function rankMentionCandidates<T extends MentionCandidate>(candidates: readonly T[], query: string): T[] {
   const lowerQuery = query.toLowerCase();
   if (!lowerQuery) return [...candidates];
 
-  const scored: Array<{ candidate: MentionCandidate; score: number }> = [];
+  const scored: Array<{ candidate: T; score: number }> = [];
   for (const candidate of candidates) {
     const name = candidate.name.toLowerCase();
     const displayName = candidate.displayName.toLowerCase();
@@ -176,4 +176,49 @@ export function buildMentionInsert(
     text: `${before}${literal}${suffix}`,
     cursor: before.length + literal.length + (needsSpace ? 1 : 0),
   };
+}
+
+/**
+ * A directory identity that is not in the chat yet. Picking one has to add
+ * them before the mention can route, so it is kept apart from the roster
+ * candidates rather than mixed into one flat list.
+ */
+export type DirectoryCandidate = MentionCandidate & {
+  type: string;
+  avatarColorToken: string | null;
+  avatarImageUrl: string | null;
+};
+
+export type MentionSection =
+  | { key: "participants"; title: string; rows: MentionCandidate[] }
+  | { key: "directory"; title: string; rows: DirectoryCandidate[] };
+
+/** How many directory hits the picker offers before asking for a narrower query. */
+export const DIRECTORY_SECTION_LIMIT = 6;
+
+/**
+ * Everyone already in the chat first — that is who the author almost always
+ * means — then the org identities they could pull in. Directory rows drop
+ * anyone already on the roster so the same person never appears twice with
+ * two different meanings.
+ */
+export function buildMentionSections(args: {
+  participants: readonly MentionCandidate[];
+  directory: readonly DirectoryCandidate[];
+  query: string;
+  limit?: number;
+}): MentionSection[] {
+  const rosterIds = new Set(args.participants.map((candidate) => candidate.agentId));
+  const participantRows = rankMentionCandidates(args.participants, args.query);
+  // Alphabetical before ranking so an empty query lists the directory in a
+  // stable, readable order instead of whatever order the server returned.
+  const addable = args.directory
+    .filter((candidate) => !rosterIds.has(candidate.agentId))
+    .sort((a, b) => a.displayName.localeCompare(b.displayName) || a.name.localeCompare(b.name));
+  const directoryRows = rankMentionCandidates(addable, args.query).slice(0, args.limit ?? DIRECTORY_SECTION_LIMIT);
+
+  const sections: MentionSection[] = [];
+  if (participantRows.length > 0) sections.push({ key: "participants", title: "Participants", rows: participantRows });
+  if (directoryRows.length > 0) sections.push({ key: "directory", title: "Add to this chat", rows: directoryRows });
+  return sections;
 }

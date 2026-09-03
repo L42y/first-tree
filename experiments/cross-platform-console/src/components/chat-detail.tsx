@@ -36,6 +36,7 @@ import {
   saveChatReadState,
 } from "~/lib/chat-read-state";
 import {
+  addChatParticipants,
   getChat,
   getChatTokenUsage,
   listChatMessages,
@@ -47,8 +48,10 @@ import { loadLiquidGlass } from "~/lib/liquid-glass";
 import {
   buildMentionCandidates,
   buildMentionInsert,
+  buildMentionSections,
   composerPlaceholder,
   computeRequiresMention,
+  type DirectoryCandidate,
   findActiveMentionTrigger,
   findSolePeerAgentId,
   isSelfOnlySpeakerRoster,
@@ -57,8 +60,10 @@ import {
   shouldPrimeMentionOnFocus,
 } from "~/lib/mentions";
 import { buildParticipantRoster, summarizeParticipants } from "~/lib/participants";
+import { listOrgAgents } from "~/lib/team-api";
 import { colors } from "~/lib/theme";
 import { formatTokenCount, processedTokenCount } from "~/lib/token-usage";
+import { useDebouncedValue } from "~/lib/use-debounced-value";
 
 const PAGE_SIZE = 50;
 
@@ -468,6 +473,48 @@ export function ChatDetailContent({
     [activeMentionTrigger, mentionCandidates],
   );
 
+  // Org identities the author could pull into the chat. Only queried while
+  // an `@` is actually being typed, and keyed on the typed term so the
+  // server-side search reaches past the roster's first page.
+  const mentionQuery = activeMentionTrigger?.query ?? "";
+  const debouncedMentionQuery = useDebouncedValue(mentionQuery, 200);
+  const directoryQuery = useQuery({
+    queryKey: ["agents", "org-list", debouncedMentionQuery],
+    queryFn: ({ signal }) => listOrgAgents({ query: debouncedMentionQuery || undefined }, signal),
+    enabled: activeMentionTrigger != null,
+    staleTime: 30_000,
+  });
+  const directoryCandidates = useMemo<DirectoryCandidate[]>(
+    () =>
+      (directoryQuery.data ?? [])
+        .filter((agent) => agent.name && agent.status !== "suspended" && agent.uuid !== selfAgentId)
+        .map((agent) => ({
+          agentId: agent.uuid,
+          name: agent.name as string,
+          displayName: agent.displayName,
+          type: agent.type,
+          avatarColorToken: agent.avatarColorToken,
+          avatarImageUrl: agent.avatarImageUrl,
+        })),
+    [directoryQuery.data, selfAgentId],
+  );
+  const mentionSections = useMemo(
+    () =>
+      activeMentionTrigger
+        ? buildMentionSections({
+            participants: mentionCandidates,
+            directory: directoryCandidates,
+            query: activeMentionTrigger.query,
+          })
+        : [],
+    [activeMentionTrigger, directoryCandidates, mentionCandidates],
+  );
+  // A directory pick is a membership change, so it asks first instead of
+  // silently adding someone to the conversation.
+  const [pendingAdd, setPendingAdd] = useState<DirectoryCandidate | null>(null);
+  const [addingParticipant, setAddingParticipant] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+
   const applyMentionPick = useCallback(
     (candidate: (typeof mentionCandidates)[number]) => {
       if (!activeMentionTrigger) return;
@@ -480,6 +527,32 @@ export function ChatDetailContent({
     },
     [activeMentionTrigger, message],
   );
+
+  // Add, then mention: the roster refresh has to land before the insert so
+  // the draft's `@name` resolves against a roster that contains them.
+  const confirmAddParticipant = useCallback(async () => {
+    if (!pendingAdd || addingParticipant) return;
+    setAddingParticipant(true);
+    setAddError(null);
+    try {
+      await addChatParticipants(chatId, [pendingAdd.agentId]);
+      await queryClient.invalidateQueries({ queryKey: ["chats", chatId] });
+      applyMentionPick(pendingAdd);
+      setPendingAdd(null);
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : "Could not add them to this chat");
+    } finally {
+      setAddingParticipant(false);
+    }
+  }, [addingParticipant, applyMentionPick, chatId, pendingAdd, queryClient]);
+
+  // Abandoning the `@` token abandons the pending add with it; a stale
+  // confirmation would otherwise sit over an unrelated draft.
+  useEffect(() => {
+    if (activeMentionTrigger) return;
+    setPendingAdd(null);
+    setAddError(null);
+  }, [activeMentionTrigger]);
 
   const handleComposerFocus = useCallback(() => {
     if (
@@ -824,7 +897,7 @@ export function ChatDetailContent({
               </Text>
             </View>
           )}
-          {activeMentionTrigger && visibleMentionCandidates.length > 0 && (
+          {activeMentionTrigger && mentionSections.length > 0 && (
             // Same material as the composer it sits on when the device has
             // Liquid Glass: glass blurs and desaturates the timeline behind
             // it, so names stay legible instead of colliding with message
@@ -834,29 +907,83 @@ export function ChatDetailContent({
               style={[styles.mentionPicker, ComposerSurface ? styles.mentionPickerGlass : null]}
               {...(ComposerSurface ? { glassEffectStyle: "regular" as const, colorScheme: "dark" as const } : {})}
             >
-              <ScrollView
-                keyboardShouldPersistTaps="handled"
-                style={styles.mentionList}
-                contentContainerStyle={styles.mentionListContent}
-              >
-                {visibleMentionCandidates.map((candidate) => (
-                  <Pressable
-                    key={candidate.agentId}
-                    onPress={() => applyMentionPick(candidate)}
-                    style={({ pressed }) => [styles.mentionRow, pressed && styles.mentionRowPressed]}
-                  >
-                    <Avatar name={candidate.displayName} seed={candidate.agentId} size={24} kind="agent" />
-                    <View style={styles.mentionLabels}>
-                      <Text style={styles.mentionDisplayName} numberOfLines={1}>
-                        {candidate.displayName}
-                      </Text>
-                      <Text style={styles.mentionName} numberOfLines={1}>
-                        @{candidate.name}
-                      </Text>
+              {pendingAdd ? (
+                <View style={styles.mentionConfirm}>
+                  <Text style={styles.mentionConfirmTitle}>Add {pendingAdd.displayName} to this chat?</Text>
+                  <Text style={styles.mentionConfirmBody}>
+                    They aren't in this conversation yet. Adding them lets them read it and reply.
+                  </Text>
+                  {addError && <Text style={styles.mentionConfirmError}>{addError}</Text>}
+                  <View style={styles.mentionConfirmActions}>
+                    <Pressable
+                      onPress={() => {
+                        setPendingAdd(null);
+                        setAddError(null);
+                      }}
+                      disabled={addingParticipant}
+                      style={({ pressed }) => [styles.mentionConfirmButton, pressed && styles.mentionRowPressed]}
+                    >
+                      <Text style={styles.mentionConfirmCancelText}>Cancel</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => void confirmAddParticipant()}
+                      disabled={addingParticipant}
+                      style={({ pressed }) => [
+                        styles.mentionConfirmButton,
+                        styles.mentionConfirmPrimary,
+                        pressed && styles.mentionConfirmPrimaryPressed,
+                      ]}
+                    >
+                      {addingParticipant ? (
+                        <ActivityIndicator size="small" color={colors.accentText} />
+                      ) : (
+                        <Text style={styles.mentionConfirmAddText}>Add and mention</Text>
+                      )}
+                    </Pressable>
+                  </View>
+                </View>
+              ) : (
+                <ScrollView
+                  keyboardShouldPersistTaps="handled"
+                  style={styles.mentionList}
+                  contentContainerStyle={styles.mentionListContent}
+                >
+                  {mentionSections.map((section) => (
+                    <View key={section.key}>
+                      <Text style={styles.mentionSectionTitle}>{section.title}</Text>
+                      {section.rows.map((candidate) => (
+                        <Pressable
+                          key={candidate.agentId}
+                          onPress={() =>
+                            section.key === "participants"
+                              ? applyMentionPick(candidate)
+                              : setPendingAdd(candidate as DirectoryCandidate)
+                          }
+                          style={({ pressed }) => [styles.mentionRow, pressed && styles.mentionRowPressed]}
+                        >
+                          <Avatar
+                            name={candidate.displayName}
+                            seed={candidate.agentId}
+                            size={24}
+                            colorToken={"avatarColorToken" in candidate ? candidate.avatarColorToken : null}
+                            imageUrl={"avatarImageUrl" in candidate ? candidate.avatarImageUrl : null}
+                            kind={"type" in candidate && candidate.type === "human" ? "human" : "agent"}
+                          />
+                          <View style={styles.mentionLabels}>
+                            <Text style={styles.mentionDisplayName} numberOfLines={1}>
+                              {candidate.displayName}
+                            </Text>
+                            <Text style={styles.mentionName} numberOfLines={1}>
+                              @{candidate.name}
+                            </Text>
+                          </View>
+                          {section.key === "directory" && <Text style={styles.mentionAddHint}>Add</Text>}
+                        </Pressable>
+                      ))}
                     </View>
-                  </Pressable>
-                ))}
-              </ScrollView>
+                  ))}
+                </ScrollView>
+              )}
             </PickerSurface>
           )}
           {ComposerSurface ? (
@@ -1173,6 +1300,67 @@ const styles = StyleSheet.create({
   },
   mentionRowPressed: {
     backgroundColor: colors.surface,
+  },
+  mentionSectionTitle: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    paddingHorizontal: 10,
+    paddingTop: 8,
+    paddingBottom: 2,
+  },
+  mentionAddHint: {
+    color: colors.accent,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  mentionConfirm: {
+    padding: 12,
+    gap: 6,
+  },
+  mentionConfirmTitle: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  mentionConfirmBody: {
+    color: colors.textSecondary,
+    fontSize: 12,
+  },
+  mentionConfirmError: {
+    color: colors.danger,
+    fontSize: 12,
+  },
+  mentionConfirmActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 8,
+    paddingTop: 4,
+  },
+  mentionConfirmButton: {
+    minWidth: 88,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  mentionConfirmPrimary: {
+    backgroundColor: colors.accent,
+  },
+  mentionConfirmPrimaryPressed: {
+    opacity: 0.8,
+  },
+  mentionConfirmCancelText: {
+    color: colors.textSecondary,
+    fontSize: 14,
+  },
+  mentionConfirmAddText: {
+    color: colors.accentText,
+    fontSize: 14,
+    fontWeight: "600",
   },
   mentionLabels: {
     flex: 1,

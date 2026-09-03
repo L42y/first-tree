@@ -153,3 +153,12 @@ export async function renameChat(chatId: string, topic: string): Promise<void> {
 export async function setChatEngagement(chatId: string, status: "active" | "archived" | "deleted"): Promise<void> {
   await api.post(`/chats/${encodeURIComponent(chatId)}/engagement`, { status });
 }
+
+/**
+ * Add speaking participants to a chat (`POST /chats/:id/participants`,
+ * idempotent server-side). The mention picker uses this to pull someone in
+ * from the org directory before addressing them.
+ */
+export async function addChatParticipants(chatId: string, agentIds: string[]): Promise<void> {
+  await api.post(`/chats/${encodeURIComponent(chatId)}/participants`, { participantIds: agentIds });
+}

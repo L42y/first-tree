@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildMentionCandidates,
   buildMentionInsert,
+  buildMentionSections,
   composerPlaceholder,
   computeRequiresMention,
   findActiveMentionTrigger,
@@ -119,5 +120,64 @@ describe("expo mention addressing", () => {
       text: "ask @peer-agent about it",
       cursor: 15,
     });
+  });
+
+  it("splits the picker into the chat roster and the addable directory", () => {
+    const inChat = buildMentionCandidates(roster, "self");
+    const directory = [
+      {
+        agentId: "peer",
+        name: "peer-agent",
+        displayName: "Peer",
+        type: "agent",
+        avatarColorToken: null,
+        avatarImageUrl: null,
+      },
+      {
+        agentId: "kimi",
+        name: "kimi",
+        displayName: "Kimi",
+        type: "agent",
+        avatarColorToken: null,
+        avatarImageUrl: null,
+      },
+      {
+        agentId: "biao",
+        name: "biao",
+        displayName: "Biao",
+        type: "human",
+        avatarColorToken: null,
+        avatarImageUrl: null,
+      },
+    ];
+    const sections = buildMentionSections({ participants: inChat, directory, query: "" });
+    expect(sections.map((section) => section.key)).toEqual(["participants", "directory"]);
+    expect(sections[0]?.rows.map((row) => row.agentId)).toEqual(["other", "peer"]);
+    // "peer" is already in the chat, so it never shows up as addable.
+    expect(sections[1]?.rows.map((row) => row.agentId)).toEqual(["biao", "kimi"]);
+  });
+
+  it("ranks both sections by the typed query and caps the directory", () => {
+    const directory = Array.from({ length: 9 }, (_, index) => ({
+      agentId: `bot-${index}`,
+      name: `bot-${index}`,
+      displayName: `Bot ${index}`,
+      type: "agent",
+      avatarColorToken: null,
+      avatarImageUrl: null,
+    }));
+    const sections = buildMentionSections({ participants: [], directory, query: "bot" });
+    expect(sections.map((section) => section.key)).toEqual(["directory"]);
+    expect(sections[0]?.rows).toHaveLength(6);
+  });
+
+  it("omits a section that has nothing to show", () => {
+    expect(buildMentionSections({ participants: [], directory: [], query: "" })).toEqual([]);
+    const onlyRoster = buildMentionSections({
+      participants: buildMentionCandidates(roster, "self"),
+      directory: [],
+      query: "",
+    });
+    expect(onlyRoster.map((section) => section.key)).toEqual(["participants"]);
   });
 });
