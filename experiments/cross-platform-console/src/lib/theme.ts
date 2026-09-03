@@ -10,6 +10,13 @@ export const colors = {
   /** Raised surfaces: cards, inputs, bubbles, chips. */
   surface: "rgba(255,255,255,0.06)",
   surfaceStrong: "rgba(255,255,255,0.10)",
+  /**
+   * Opaque panel for anything that floats over content — popovers, pickers,
+   * menus. The translucent surfaces above read as depth when they sit on the
+   * canvas, but let message text bleed through when they overlay the
+   * timeline, so a floating layer uses this instead.
+   */
+  surfaceFloating: "#10222E",
   border: "rgba(255,255,255,0.14)",
   text: "#E8F1F5",
   textSecondary: "rgba(232,241,245,0.64)",

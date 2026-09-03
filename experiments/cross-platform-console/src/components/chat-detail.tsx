@@ -1133,8 +1133,15 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: colors.border,
-    backgroundColor: colors.surfaceStrong,
+    // Opaque: the picker floats over the timeline, and a translucent panel
+    // let message text show through and collide with the candidate names.
+    backgroundColor: colors.surfaceFloating,
     overflow: "hidden",
+    shadowColor: "#000",
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
   },
   mentionList: {
     maxHeight: 168,
