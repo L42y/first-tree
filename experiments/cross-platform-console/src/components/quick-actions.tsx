@@ -49,7 +49,7 @@ export function QuickActions({ visible, onClose }: { visible: boolean; onClose: 
 
   const items = useMemo<Item[]>(() => {
     const out: Item[] = [
-      { key: "c-attention", section: "Actions", label: "Needs you (asks + unread)", action: () => go("/attention") },
+      { key: "c-attention", section: "Actions", label: "Catch up on what needs you", action: () => go("/attention") },
       { key: "c-newchat", section: "Actions", label: "Start chat with an agent…", action: () => go("/team") },
       { key: "c-archived", section: "Actions", label: "Archived chats", action: () => go("/") },
       { key: "c-repos", section: "Actions", label: "Repositories", action: () => go("/repos") },
