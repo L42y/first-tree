@@ -120,3 +120,28 @@ export async function resolveAskRequest(
     metadata: { resolves: { request: question.id, kind } },
   });
 }
+
+/**
+ * Message ids that belong to an ask's thread rather than the conversation:
+ * every reply under the request, and every reply under those replies (an
+ * agent answering a clarification replies to the clarification, not to the
+ * ask). Slack's rule — a thread reply lives in its thread, not in the channel
+ * — needs the whole subtree, not just the direct children.
+ */
+export function threadDescendantIds(messages: readonly Message[], rootIds: readonly string[]): Set<string> {
+  const hidden = new Set<string>();
+  const roots = new Set(rootIds);
+  // The window is oldest-first, so one forward pass reaches every descendant:
+  // a reply always follows the message it replies to.
+  for (const message of messages) {
+    const parent = message.inReplyTo;
+    if (!parent) continue;
+    if (roots.has(parent) || hidden.has(parent)) hidden.add(message.id);
+  }
+  return hidden;
+}
+
+/** The asks in a loaded window, in timeline order. */
+export function collectRequestIds(messages: readonly Message[]): string[] {
+  return messages.filter((message) => message.format === "request").map((message) => message.id);
+}

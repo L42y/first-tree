@@ -21,6 +21,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AddParticipantConfirm } from "~/components/add-participant-confirm";
 import { AgentMetaLine } from "~/components/agent-meta";
+import { AskThread } from "~/components/ask-thread";
 import { Avatar } from "~/components/avatar";
 import { ChatDetailsSheet } from "~/components/chat-details-sheet";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
@@ -29,7 +30,7 @@ import { ComposerField } from "~/components/composer-field";
 import type { LiveMarkdownInputHandle } from "~/components/live-markdown-input";
 import { MessageCard } from "~/components/message-card";
 import { RenameChatModal } from "~/components/rename-chat-modal";
-import { ASK_MODAL_ROUTE, fetchOpenRequests, parseAskRequest } from "~/lib/ask";
+import { ASK_MODAL_ROUTE, collectRequestIds, fetchOpenRequests, parseAskRequest, threadDescendantIds } from "~/lib/ask";
 import { useAuth } from "~/lib/auth-context";
 import { clearChatUnreadRows, patchChatRowActivity } from "~/lib/chat-list-cache";
 import {
@@ -311,7 +312,13 @@ export function ChatDetailContent({
     return firstUnreadIndex;
   }, [frozenUnreadAnchorId, messages, selfSenderIds, unreadBaselineId]);
   const timeline = useMemo<TimelineItem[]>(() => {
-    const messageItems = messages.map((message): TimelineItem => ({ kind: "message", key: message.id, message }));
+    // Slack's rule: a thread reply lives in its thread. Clarifications and the
+    // answer render under the ask they belong to, so they do not also appear
+    // loose in the conversation.
+    const threadIds = threadDescendantIds(messages, collectRequestIds(messages));
+    const messageItems = messages
+      .filter((message) => !threadIds.has(message.id))
+      .map((message): TimelineItem => ({ kind: "message", key: message.id, message }));
     if (dividerInsertIndex < 0) return messageItems;
     const divider: TimelineItem = { kind: "divider", key: "unread-divider", count: unreadCount };
     return [...messageItems.slice(0, dividerInsertIndex), divider, ...messageItems.slice(dividerInsertIndex)];
@@ -855,7 +862,11 @@ export function ChatDetailContent({
           }
           const { message: itemMessage } = item;
           const messageView =
-            itemMessage.format === "card" ? (
+            itemMessage.format === "request" ? (
+              <View style={styles.askThreadRow}>
+                <AskThread chatId={chatId} requestId={itemMessage.id} question={itemMessage} />
+              </View>
+            ) : itemMessage.format === "card" ? (
               <MessageCard message={itemMessage} />
             ) : (
               <ChatMessageBubble
@@ -865,11 +876,7 @@ export function ChatDetailContent({
                 avatar={toBubbleAvatar(itemMessage.senderId)}
               />
             );
-          return askModalVisible && itemMessage.id === openAskId ? (
-            <View style={styles.hiddenModalMessage}>{messageView}</View>
-          ) : (
-            messageView
-          );
+          return messageView;
         }}
         // Scrolling up in an inverted list runs toward the end of the data,
         // so older pages load here. Appending them leaves the visible rows
@@ -1175,8 +1182,9 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
   },
-  hiddenModalMessage: {
-    opacity: 0,
+  askThreadRow: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
   },
   errorBox: {
     padding: 16,

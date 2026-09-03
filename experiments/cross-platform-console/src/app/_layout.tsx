@@ -91,14 +91,12 @@ export default function RootLayout() {
                 <Stack.Screen
                   name="ask/[requestId]"
                   options={{
-                    // The sheet draws its own container, so the route only has
-                    // to be a transparent full-height surface for it to cap
-                    // itself against.
-                    presentation: "transparentModal",
-                    animation: "fade",
+                    // A thread is a place you go, not a panel over the chat:
+                    // it pushes, and the back gesture is how you leave it.
                     headerShown: false,
-                    contentStyle: { backgroundColor: "transparent" },
+                    contentStyle: { backgroundColor: colors.bg },
                     gestureEnabled: true,
+                    fullScreenGestureEnabled: true,
                   }}
                 />
               </Stack>

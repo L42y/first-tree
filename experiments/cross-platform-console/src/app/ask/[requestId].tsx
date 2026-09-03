@@ -1,7 +1,7 @@
 import { Redirect, useLocalSearchParams } from "expo-router";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 
-import { AskModal } from "~/components/ask-modal";
+import { AskThreadScreen } from "~/components/ask-thread";
 import { useAuth } from "~/lib/auth-context";
 import { colors } from "~/lib/theme";
 
@@ -29,7 +29,7 @@ export default function AskModalRoute() {
   if (!isAuthenticated) return <Redirect href="/login" />;
   if (!chatId || !requestId) return <Redirect href="/(app)" />;
 
-  return <AskModal key={requestId} chatId={chatId} requestId={requestId} />;
+  return <AskThreadScreen key={requestId} chatId={chatId} requestId={requestId} />;
 }
 
 const styles = StyleSheet.create({

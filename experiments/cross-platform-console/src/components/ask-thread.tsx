@@ -1,19 +1,9 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
+import type { Message } from "@first-tree/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Animated,
-  Keyboard,
-  PanResponder,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ComposerField } from "~/components/composer-field";
@@ -28,53 +18,30 @@ import {
 import { useAuth } from "~/lib/auth-context";
 import { colors } from "~/lib/theme";
 
-export function AskModal({ chatId, requestId }: { chatId: string; requestId: string }) {
+/**
+ * An ask, as a thread on the message it belongs to — the shape Slack uses: the
+ * question stays in the conversation, its clarifications and its answer hang
+ * off it as replies, and the reply box belongs to the thread rather than to a
+ * sheet floating over the chat. One implementation serves both places it is
+ * read: inline under the message in the timeline, and on its own screen when
+ * opened from the dock or a notification.
+ */
+export function AskThread({
+  chatId,
+  requestId,
+  question: questionProp,
+  onResolved,
+}: {
+  chatId: string;
+  requestId: string;
+  /** The request message when the caller already has it (timeline embed). */
+  question?: Message;
+  onResolved?: () => void;
+}) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const { agentId: selfAgentId } = useAuth();
-  const insets = useSafeAreaInsets();
-  // Pull the sheet down to dismiss, the same gesture the participants sheet
-  // uses: the grabber area claims a clear downward drag, and the body only
-  // dismisses through overscroll once it has no scrolling left to do.
-  const dragY = useRef(new Animated.Value(0)).current;
-  const settle = useCallback(() => {
-    Animated.spring(dragY, { toValue: 0, useNativeDriver: true, bounciness: 0 }).start();
-  }, [dragY]);
-  const dismiss = useCallback(() => {
-    Animated.timing(dragY, { toValue: 700, duration: 160, useNativeDriver: true }).start(() => router.back());
-  }, [dragY, router]);
-  const headerDrag = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_event, gesture) => gesture.dy > 4 && gesture.dy > Math.abs(gesture.dx),
-        onPanResponderMove: (_event, gesture) => {
-          if (gesture.dy > 0) dragY.setValue(gesture.dy);
-        },
-        onPanResponderRelease: (_event, gesture) => {
-          if (gesture.dy > 90 || gesture.vy > 0.8) dismiss();
-          else settle();
-        },
-        onPanResponderTerminate: settle,
-      }),
-    [dismiss, dragY, settle],
-  );
-
-  // Same deterministic keyboard handling the composer uses: lift by the exact
-  // keyboard height. KeyboardAvoidingView mis-measures inside a native modal
-  // and left the action row behind the keyboard.
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
-  useEffect(() => {
-    if (Platform.OS !== "ios") return;
-    const show = Keyboard.addListener("keyboardDidShow", (event) => setKeyboardHeight(event.endCoordinates.height));
-    const hide = Keyboard.addListener("keyboardDidHide", () => setKeyboardHeight(0));
-    return () => {
-      show.remove();
-      hide.remove();
-    };
-  }, []);
-  // Web parity (`ask-takeover.tsx`): answering and asking the agent are two
-  // surfaces, not two tabs. Ask-agent mode replaces the answer surface so the
-  // reply box and the question box never compete for the same footer actions.
+  // Answering and asking the agent are two destinations for one reply box.
   const [askAgentOpen, setAskAgentOpen] = useState(false);
   const [answer, setAnswer] = useState("");
   const [clarification, setClarification] = useState("");
@@ -86,13 +53,17 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
   const openRequestsQuery = useQuery({
     queryKey: ["chats", chatId, "open-requests"],
     queryFn: ({ signal }) => fetchOpenRequests(chatId, signal),
+    enabled: questionProp == null,
     refetchInterval: 30_000,
   });
 
   const question = useMemo(
-    () => openRequestsQuery.data?.find((message) => message.id === requestId) ?? null,
-    [openRequestsQuery.data, requestId],
+    () => questionProp ?? openRequestsQuery.data?.find((message) => message.id === requestId) ?? null,
+    [openRequestsQuery.data, questionProp, requestId],
   );
+  // An embedded thread renders under a message that is already on screen, so
+  // it never navigates and never chases the next open ask.
+  const embedded = questionProp != null;
   const parsed = question ? parseAskRequest(question) : null;
   // The ask IS the message body. The web renders it whole as markdown; this
   // used to run a splitter that cut it into "decision" / "recommendation" /
@@ -112,24 +83,30 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
   );
 
   useEffect(() => {
+    if (embedded) return;
     if (openRequestsQuery.isSuccess && !openRequestsQuery.isFetching && question === null && !advancing) {
       router.back();
     }
-  }, [advancing, openRequestsQuery.isFetching, openRequestsQuery.isSuccess, question, router]);
+  }, [advancing, embedded, openRequestsQuery.isFetching, openRequestsQuery.isSuccess, question, router]);
 
+  // After a resolution: an embedded thread settles in place under its message,
+  // while the standalone screen moves on to the next open ask — the reason it
+  // was opened was to clear them.
   const advance = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "open-requests"] });
+    await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "request-thread", requestId] });
+    await queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
+    if (embedded) {
+      onResolved?.();
+      return;
+    }
     setAdvancing(true);
     try {
-      await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "open-requests"] });
-      await queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
       const remaining = await fetchOpenRequests(chatId);
       queryClient.setQueryData(["chats", chatId, "open-requests"], remaining);
       const next = remaining.find((message) => message.id !== requestId);
       if (next) {
-        router.replace({
-          pathname: "/ask/[requestId]",
-          params: { chatId, requestId: next.id },
-        } as never);
+        router.replace({ pathname: "/ask/[requestId]", params: { chatId, requestId: next.id } } as never);
       } else {
         router.back();
       }
@@ -137,7 +114,7 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
       setAdvancing(false);
       setError(err instanceof Error ? err.message : "Could not load the next question");
     }
-  }, [chatId, queryClient, requestId, router]);
+  }, [chatId, embedded, onResolved, queryClient, requestId, router]);
 
   const submit = useCallback(async () => {
     if (!question || !parsed) return;
@@ -195,7 +172,8 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
     }
   }, [chatId, clarification, queryClient, requestId, question]);
 
-  if (openRequestsQuery.isLoading || !parsed) {
+  if (!parsed) {
+    if (embedded) return null;
     return (
       <View style={styles.loading}>
         {openRequestsQuery.isError ? (
@@ -214,6 +192,11 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
   // Without options, the note IS the answer.
   const canSubmit = !busy && (options.length === 0 ? answer.trim().length > 0 : selected.length > 0);
   const canAskAgent = !busy && clarification.trim().length > 0;
+  // Embedded in the timeline the thread outlives its answer, so it has to be
+  // able to show that it was answered rather than keep offering a reply box.
+  const resolved = thread.some(
+    (entry) => (entry.metadata?.resolves as { request?: unknown } | undefined)?.request === requestId,
+  );
 
   const toggleOption = (index: number) => {
     setSelected((current) => {
@@ -224,70 +207,49 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
     });
   };
 
-  // Shaped like the participants sheet, because that is the shape that works
-  // here: a bottom sheet capped against a full-height parent, and everything
-  // in one scroller. Skip and Show chat are header actions — the two ways out
-  // — while the input carries the two ways forward, so nothing is pinned to
-  // the bottom edge fighting the keyboard.
   return (
-    <View style={[styles.overlay, { paddingBottom: keyboardHeight }]}>
-      <Pressable style={styles.backdrop} onPress={() => router.back()} accessibilityLabel="Show the chat" />
-      <Animated.View style={[styles.sheet, { transform: [{ translateY: dragY }] }]}>
-        <View {...headerDrag.panHandlers}>
-          <View style={styles.grabber} />
-          <View style={styles.topBar}>
-            <Text style={styles.kicker}>Question for you</Text>
-            <View style={styles.topActions}>
-              {/* Skip resolves the question without answering, so it belongs
-                  with the other ways out — not next to the send action. */}
-              <Pressable
-                onPress={() => void skip()}
-                disabled={busy}
-                hitSlop={8}
-                style={({ pressed }) => [styles.headerLink, busy && styles.disabled, pressed && styles.pressed]}
-              >
-                <Text style={styles.headerLinkText}>Skip</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => router.back()}
-                hitSlop={8}
-                style={({ pressed }) => [styles.headerLink, pressed && styles.pressed]}
-              >
-                <Text style={styles.headerLinkText}>Show chat</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 20 }]}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="interactive"
-          scrollEventThrottle={16}
-          onScroll={({ nativeEvent }) => dragY.setValue(Math.max(0, -nativeEvent.contentOffset.y))}
-          onScrollEndDrag={({ nativeEvent }) => {
-            if (nativeEvent.contentOffset.y < -80) dismiss();
-            else settle();
-          }}
-        >
-          {/* The ask, whole, as the agent wrote it. */}
-          <MarkdownText value={rawContent || "The agent did not provide a question."} />
-
-          {thread.length > 0 && (
-            <View style={styles.threadBlock}>
-              {thread.map((entry) => (
-                <View key={entry.id} style={styles.threadEntry}>
-                  <Text style={styles.threadAuthor}>
-                    {entry.senderId === selfAgentId ? "You asked the agent" : "Agent response"}
-                  </Text>
-                  <MarkdownText value={typeof entry.content === "string" ? entry.content : ""} />
-                </View>
-              ))}
-            </View>
+    <View style={styles.thread}>
+      {/* The ask itself. In the timeline this replaces the plain bubble, so
+          the question and everything hanging off it read as one unit. */}
+      <View style={styles.askCard}>
+        <View style={styles.askHead}>
+          <Ionicons name="help-circle-outline" size={15} color={colors.accent} />
+          <Text style={styles.kicker}>Question for you</Text>
+          <View style={styles.spacer} />
+          {!resolved && (
+            <Pressable
+              onPress={() => void skip()}
+              disabled={busy}
+              hitSlop={8}
+              style={({ pressed }) => [styles.headerLink, busy && styles.disabled, pressed && styles.pressed]}
+            >
+              <Text style={styles.headerLinkText}>Skip</Text>
+            </Pressable>
           )}
+        </View>
+        <MarkdownText value={rawContent || "The agent did not provide a question."} />
+      </View>
 
-          {!askAgentOpen && options.length > 0 && (
+      {/* Replies, as replies: indented under the ask, oldest first. */}
+      {thread.length > 0 && (
+        <View style={styles.replies}>
+          {thread.map((entry) => (
+            <View key={entry.id} style={styles.reply}>
+              <Text style={styles.replyAuthor}>{entry.senderId === selfAgentId ? "You" : "Agent"}</Text>
+              <MarkdownText value={typeof entry.content === "string" ? entry.content : ""} />
+            </View>
+          ))}
+        </View>
+      )}
+
+      {resolved ? (
+        <View style={styles.resolvedRow}>
+          <Ionicons name="checkmark-circle" size={15} color={colors.textMuted} />
+          <Text style={styles.resolvedText}>Answered</Text>
+        </View>
+      ) : (
+        <View style={styles.replyBox}>
+          {options.length > 0 && (
             <View style={styles.options}>
               {options.map((option, index) => {
                 const isSelected = selected.includes(index);
@@ -323,9 +285,7 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
             </View>
           )}
 
-          {/* What the input is for, sitting on it: answering the question, or
-              asking the agent about it. Two destinations for one box beats two
-              buttons competing for the same box. */}
+          {/* Where the reply goes: to the question, or to the agent about it. */}
           <View style={styles.tabs}>
             <Pressable
               accessibilityRole="tab"
@@ -345,8 +305,6 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
             </Pressable>
           </View>
 
-          {/* The chat's own composer, not a second input that behaves
-              differently. */}
           <ComposerField
             trailing={
               <Pressable
@@ -377,7 +335,7 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
                   : "Type your answer…"
             }
             multiline
-            minLines={askAgentOpen || options.length === 0 ? 3 : 1}
+            minLines={1}
             maxLines={5}
             maxLength={4000}
             returnKeyType={askAgentOpen || options.length === 0 ? "send" : "done"}
@@ -389,73 +347,83 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
           />
 
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
-        </ScrollView>
-      </Animated.View>
+        </View>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  // A thread, not a panel: the ask reads as the message it is, its replies sit
+  // indented under it, and the reply box belongs to the thread.
+  thread: {
+    gap: 8,
+    paddingVertical: 4,
+  },
+  askCard: {
+    gap: 6,
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  askHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  spacer: {
+    flex: 1,
+  },
+  replies: {
+    gap: 8,
+    marginLeft: 12,
+    paddingLeft: 12,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.border,
+  },
+  reply: {
+    gap: 2,
+  },
+  replyAuthor: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+  replyBox: {
+    gap: 10,
+    marginLeft: 12,
+    paddingLeft: 12,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.border,
+  },
+  resolvedRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginLeft: 24,
+  },
+  resolvedText: {
+    color: colors.textMuted,
+    fontSize: 13,
+    fontWeight: "600",
+  },
   // Same shell as the participants sheet: a full-height overlay gives the
   // sheet's percentage cap something definite to resolve against, and the
   // sheet grows with its contents until it hits that cap.
-  overlay: {
-    flex: 1,
-    justifyContent: "flex-end",
-  },
-  backdrop: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    backgroundColor: "rgba(0,0,0,0.55)",
-  },
-  sheet: {
-    maxHeight: "88%",
-    backgroundColor: colors.bg,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    overflow: "hidden",
-  },
-  grabber: {
-    alignSelf: "center",
-    marginTop: 8,
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.border,
-  },
-  topBar: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 10,
-  },
   // `maxHeight: "90%"` only means anything against a parent with a definite
   // height. Without this the sheet grew past the screen and its scroller never
   // shrank, which is how the answer field ended up under the action row.
   // The sheet grows with its contents up to a ceiling instead of being handed
   // a fixed fraction of the screen its contents may not fit in.
   loading: {
-    flex: 1,
+    paddingVertical: 24,
     backgroundColor: colors.bg,
     alignItems: "center",
     justifyContent: "center",
-  },
-  scroll: {
-    flexShrink: 1,
-  },
-  scrollContent: {
-    gap: 14,
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 24,
   },
   kicker: {
     color: colors.accent,
@@ -463,11 +431,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.7,
     textTransform: "uppercase",
-  },
-  topActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
   },
   headerLink: {
     flexDirection: "row",
@@ -480,24 +443,6 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 13,
     fontWeight: "600",
-  },
-  threadBlock: {
-    gap: 8,
-  },
-  threadEntry: {
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 14,
-    gap: 4,
-    padding: 12,
-  },
-  threadAuthor: {
-    color: colors.textMuted,
-    fontSize: 11,
-    fontWeight: "800",
-    letterSpacing: 0.5,
-    textTransform: "uppercase",
   },
   options: {
     gap: 8,
@@ -603,5 +548,64 @@ const styles = StyleSheet.create({
   errorText: {
     color: colors.danger,
     fontSize: 13,
+  },
+});
+
+/**
+ * The same thread on its own screen — what the dock and notifications open.
+ * A pushed screen rather than a sheet: a thread is a place you go, and the
+ * back gesture is how you leave it.
+ */
+export function AskThreadScreen({ chatId, requestId }: { chatId: string; requestId: string }) {
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  return (
+    <View style={screenStyles.screen}>
+      <View style={[screenStyles.header, { paddingTop: insets.top + 6 }]}>
+        <Pressable onPress={() => router.back()} hitSlop={10} style={screenStyles.back}>
+          <Ionicons name="chevron-back" size={20} color={colors.text} />
+        </Pressable>
+        <Text style={screenStyles.title}>Thread</Text>
+      </View>
+      <ScrollView
+        contentContainerStyle={[screenStyles.body, { paddingBottom: insets.bottom + 24 }]}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+      >
+        <AskThread chatId={chatId} requestId={requestId} />
+      </ScrollView>
+    </View>
+  );
+}
+
+const screenStyles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: colors.bg,
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  back: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surfaceStrong,
+  },
+  title: {
+    color: colors.text,
+    fontSize: 17,
+    fontWeight: "600",
+  },
+  body: {
+    padding: 16,
   },
 });
