@@ -19,6 +19,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Avatar } from "~/components/avatar";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
+import { ChatParticipantsSheet } from "~/components/chat-participants";
 import { LiveMarkdownInput, type LiveMarkdownInputHandle } from "~/components/live-markdown-input";
 import { MessageCard } from "~/components/message-card";
 import { ASK_MODAL_ROUTE, fetchOpenRequests, parseAskRequest } from "~/lib/ask";
@@ -54,6 +55,7 @@ import {
   rankMentionCandidates,
   shouldPrimeMentionOnFocus,
 } from "~/lib/mentions";
+import { buildParticipantRoster, summarizeParticipants } from "~/lib/participants";
 import { colors } from "~/lib/theme";
 import { formatTokenCount, processedTokenCount } from "~/lib/token-usage";
 
@@ -327,6 +329,18 @@ export function ChatDetailContent({
   );
 
   const chat = chatQuery.data;
+
+  // Roster ordered by who spoke last: the header names the currently active
+  // people first, and the sheet spells the same order out with activity times.
+  const participantRoster = useMemo(
+    () => buildParticipantRoster(chat?.participants ?? [], messages, { agentId: selfAgentId, senderIds: selfSenderIds }),
+    [chat?.participants, messages, selfAgentId, selfSenderIds],
+  );
+  const headerPeer = useMemo(
+    () => participantRoster.find((row) => !row.isSelf)?.participant ?? null,
+    [participantRoster],
+  );
+  const [participantsOpen, setParticipantsOpen] = useState(false);
 
   // The viewer's own open ask, if any. Scoped server-side to this viewer and
   // independent of the loaded message window, so it is the whole answer to
@@ -639,25 +653,39 @@ export function ChatDetailContent({
             <Text style={styles.backText}>Back</Text>
           </Pressable>
         )}
-        <Avatar
-          name={chat?.participants.find((p) => p.agentId !== selfAgentId)?.displayName ?? chat?.title ?? chatId}
-          seed={chat?.participants.find((p) => p.agentId !== selfAgentId)?.agentId ?? chatId}
-          colorToken={chat?.participants.find((p) => p.agentId !== selfAgentId)?.avatarColorToken ?? null}
-          imageUrl={chat?.participants.find((p) => p.agentId !== selfAgentId)?.avatarImageUrl ?? null}
-          kind={chat?.participants.find((p) => p.agentId !== selfAgentId)?.type === "human" ? "human" : "agent"}
-          size={32}
-        />
-        <View style={styles.headerText}>
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            {chat?.title ?? chatId.slice(0, 8)}
-          </Text>
-          {chat?.participants && (
-            <Text style={styles.headerSubtitle} numberOfLines={1}>
-              {chat.participants.map((p) => p.displayName).join(", ")}
+        <Pressable
+          style={styles.headerIdentity}
+          onPress={() => setParticipantsOpen(true)}
+          disabled={participantRoster.length === 0}
+          accessibilityRole="button"
+          accessibilityLabel="Show participants"
+        >
+          <Avatar
+            name={headerPeer?.displayName ?? chat?.title ?? chatId}
+            seed={headerPeer?.agentId ?? chatId}
+            colorToken={headerPeer?.avatarColorToken ?? null}
+            imageUrl={headerPeer?.avatarImageUrl ?? null}
+            kind={headerPeer?.type === "human" ? "human" : "agent"}
+            size={32}
+          />
+          <View style={styles.headerText}>
+            <Text style={styles.headerTitle} numberOfLines={1}>
+              {chat?.title ?? chatId.slice(0, 8)}
             </Text>
-          )}
-        </View>
+            {participantRoster.length > 0 && (
+              <Text style={styles.headerSubtitle} numberOfLines={1}>
+                {summarizeParticipants(participantRoster)}
+              </Text>
+            )}
+          </View>
+        </Pressable>
       </View>
+
+      <ChatParticipantsSheet
+        visible={participantsOpen}
+        rows={participantRoster}
+        onClose={() => setParticipantsOpen(false)}
+      />
 
       {isLoading && (
         <View style={styles.center}>
@@ -932,6 +960,12 @@ const styles = StyleSheet.create({
   backText: {
     fontSize: 14,
     color: colors.text,
+  },
+  headerIdentity: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
   },
   headerText: {
     flex: 1,
