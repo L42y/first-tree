@@ -80,6 +80,14 @@ export type OrgAgent = {
   type: string;
   status: string;
   visibility: string;
+  /** Which runtime drives this agent ("claude-code", "codex", …); null for humans. */
+  runtimeProvider: string | null;
+  /** Member who manages the agent — only they may read its runtime config. */
+  managerId: string | null;
+  /** Live presence joined from `agent_presence`; null when never connected. */
+  presenceStatus: string | null;
+  runtimeState: string | null;
+  lastSeenAt: string | null;
   avatarColorToken: string | null;
   avatarImageUrl: string | null;
 };
@@ -92,13 +100,23 @@ export type OrgAgent = {
  * reachable.
  */
 export async function listOrgAgents(
-  params?: { query?: string; limit?: number },
+  params?: { query?: string; limit?: number; addressableOnly?: boolean },
   signal?: AbortSignal,
 ): Promise<OrgAgent[]> {
   const qs = new URLSearchParams();
   qs.set("limit", String(params?.limit ?? 100));
-  qs.set("addressableOnly", "true");
+  if (params?.addressableOnly ?? true) qs.set("addressableOnly", "true");
   if (params?.query) qs.set("query", params.query);
   const page = await api.get<{ items: OrgAgent[] }>(withOrg(`/agents?${qs.toString()}`), { signal });
   return page.items ?? [];
+}
+
+/** Pause an agent (`POST /agents/:uuid/suspend`) — it stops taking work. */
+export async function suspendAgent(uuid: string): Promise<void> {
+  await api.post(withOrg(`/agents/${encodeURIComponent(uuid)}/suspend`), {});
+}
+
+/** Resume a paused agent (`POST /agents/:uuid/reactivate`). */
+export async function reactivateAgent(uuid: string): Promise<void> {
+  await api.post(withOrg(`/agents/${encodeURIComponent(uuid)}/reactivate`), {});
 }

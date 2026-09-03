@@ -1,13 +1,28 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
+import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AddParticipantConfirm } from "~/components/add-participant-confirm";
+import { AgentMetaLine } from "~/components/agent-meta";
 import { Avatar } from "~/components/avatar";
-import { formatLastActive, type ParticipantRosterRow, participantRoleLabel } from "~/lib/participants";
+import { canToggleAgentRun } from "~/lib/agent-runtime";
+import { formatLastActive, type ParticipantRosterRow } from "~/lib/participants";
+import { reactivateAgent, suspendAgent } from "~/lib/team-api";
 import { colors } from "~/lib/theme";
 import { useAddParticipant, useDirectoryCandidates } from "~/lib/use-add-participant";
+import { useAgentRuntimeSummaries } from "~/lib/use-agent-runtime";
 
 /**
  * Who is in this chat, ordered by who spoke last. Opened from the chat header,
@@ -38,6 +53,40 @@ export function ChatParticipantsSheet({
     selfAgentId,
   });
   const rosterIds = useMemo(() => new Set(rows.map((row) => row.participant.agentId)), [rows]);
+  const shownAgentIds = useMemo(
+    () => [...rosterIds, ...candidates.map((candidate) => candidate.agentId)],
+    [candidates, rosterIds],
+  );
+  const runtimeSummaries = useAgentRuntimeSummaries(shownAgentIds, { enabled: visible });
+  const queryClient = useQueryClient();
+  const [togglingAgentId, setTogglingAgentId] = useState<string | null>(null);
+
+  // Pause / resume is `suspend` / `reactivate`, the same pair the agent detail
+  // screen drives. Pausing stops an agent mid-conversation, so it asks first;
+  // resuming just puts it back to work and does not.
+  const toggleAgentRun = async (agentId: string, paused: boolean) => {
+    setTogglingAgentId(agentId);
+    try {
+      await (paused ? reactivateAgent(agentId) : suspendAgent(agentId));
+      await queryClient.invalidateQueries({ queryKey: ["agents", "org-list"] });
+      await queryClient.invalidateQueries({ queryKey: ["me", "managed-agents"] });
+    } catch (err) {
+      Alert.alert("Couldn't update the agent", err instanceof Error ? err.message : "Please try again.");
+    } finally {
+      setTogglingAgentId(null);
+    }
+  };
+
+  const requestToggle = (agentId: string, displayName: string, paused: boolean) => {
+    if (paused) {
+      void toggleAgentRun(agentId, true);
+      return;
+    }
+    Alert.alert("Pause this agent?", `${displayName} stops picking up work until you resume it.`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Pause", style: "destructive", onPress: () => void toggleAgentRun(agentId, false) },
+    ]);
+  };
   const addable = useMemo(
     () =>
       candidates
@@ -118,12 +167,15 @@ export function ChatParticipantsSheet({
                       size={40}
                     />
                     <View style={styles.rowMain}>
-                      <Text style={styles.name} numberOfLines={1}>
-                        {candidate.displayName}
-                      </Text>
-                      <Text style={styles.meta} numberOfLines={1}>
-                        @{candidate.name}
-                      </Text>
+                      <View style={styles.nameLine}>
+                        <Text style={styles.name} numberOfLines={1}>
+                          {candidate.displayName}
+                        </Text>
+                        <Text style={styles.handle} numberOfLines={1}>
+                          @{candidate.name}
+                        </Text>
+                      </View>
+                      <AgentMetaLine summary={runtimeSummaries.get(candidate.agentId)} />
                     </View>
                     <Text style={styles.addAction}>Add</Text>
                   </Pressable>
@@ -154,16 +206,45 @@ export function ChatParticipantsSheet({
                       <Text style={styles.name} numberOfLines={1}>
                         {row.participant.displayName}
                       </Text>
+                      {row.participant.name && (
+                        <Text style={styles.handle} numberOfLines={1}>
+                          @{row.participant.name}
+                        </Text>
+                      )}
                       {row.isSelf && <Text style={styles.youTag}>You</Text>}
                     </View>
-                    <Text style={styles.meta} numberOfLines={1}>
-                      {row.participant.name ? `@${row.participant.name} · ` : ""}
-                      {participantRoleLabel(row)}
-                    </Text>
+                    <AgentMetaLine summary={runtimeSummaries.get(row.participant.agentId)} showActivity />
                   </View>
-                  <Text style={[styles.activity, row.lastActiveAt === null && styles.activityIdle]} numberOfLines={1}>
-                    {formatLastActive(row.lastActiveAt, now)}
-                  </Text>
+                  <View style={styles.rowTrailing}>
+                    <Text style={[styles.activity, row.lastActiveAt === null && styles.activityIdle]} numberOfLines={1}>
+                      {formatLastActive(row.lastActiveAt, now)}
+                    </Text>
+                    {(() => {
+                      const summary = runtimeSummaries.get(row.participant.agentId);
+                      if (!canToggleAgentRun(summary)) return null;
+                      const paused = summary?.status === "suspended";
+                      const busy = togglingAgentId === row.participant.agentId;
+                      return (
+                        <Pressable
+                          onPress={() => requestToggle(row.participant.agentId, row.participant.displayName, paused)}
+                          disabled={busy}
+                          hitSlop={8}
+                          accessibilityLabel={paused ? "Resume agent" : "Pause agent"}
+                          style={({ pressed }) => [styles.runToggle, pressed && styles.rowPressed]}
+                        >
+                          {busy ? (
+                            <ActivityIndicator size="small" color={colors.textMuted} />
+                          ) : (
+                            <Ionicons
+                              name={paused ? "play-circle-outline" : "pause-circle-outline"}
+                              size={22}
+                              color={paused ? colors.accent : colors.textSecondary}
+                            />
+                          )}
+                        </Pressable>
+                      );
+                    })()}
+                  </View>
                 </View>
               ))
             )}
@@ -290,9 +371,19 @@ const styles = StyleSheet.create({
     paddingVertical: 1,
     overflow: "hidden",
   },
-  meta: {
-    color: colors.textSecondary,
+  handle: {
+    color: colors.textMuted,
     fontSize: 12,
+    flexShrink: 1,
+  },
+  rowTrailing: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  runToggle: {
+    padding: 2,
+    borderRadius: 999,
   },
   activity: {
     color: colors.textSecondary,

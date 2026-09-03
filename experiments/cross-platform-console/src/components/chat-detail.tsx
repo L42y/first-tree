@@ -18,6 +18,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AddParticipantConfirm } from "~/components/add-participant-confirm";
+import { AgentMetaLine } from "~/components/agent-meta";
 import { Avatar } from "~/components/avatar";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
 import { ChatParticipantsSheet } from "~/components/chat-participants";
@@ -63,6 +64,7 @@ import { buildParticipantRoster, summarizeParticipants } from "~/lib/participant
 import { colors } from "~/lib/theme";
 import { formatTokenCount, processedTokenCount } from "~/lib/token-usage";
 import { useAddParticipant, useDirectoryCandidates } from "~/lib/use-add-participant";
+import { useAgentRuntimeSummaries } from "~/lib/use-agent-runtime";
 
 const PAGE_SIZE = 50;
 
@@ -491,6 +493,11 @@ export function ChatDetailContent({
     [activeMentionTrigger, directoryCandidates, mentionCandidates],
   );
   const addFlow = useAddParticipant(chatId);
+  const pickerAgentIds = useMemo(
+    () => mentionSections.flatMap((section) => section.rows.map((row) => row.agentId)),
+    [mentionSections],
+  );
+  const pickerRuntimes = useAgentRuntimeSummaries(pickerAgentIds, { enabled: activeMentionTrigger != null });
 
   const applyMentionPick = useCallback(
     (candidate: (typeof mentionCandidates)[number]) => {
@@ -908,12 +915,15 @@ export function ChatDetailContent({
                             kind={"type" in candidate && candidate.type === "human" ? "human" : "agent"}
                           />
                           <View style={styles.mentionLabels}>
-                            <Text style={styles.mentionDisplayName} numberOfLines={1}>
-                              {candidate.displayName}
-                            </Text>
-                            <Text style={styles.mentionName} numberOfLines={1}>
-                              @{candidate.name}
-                            </Text>
+                            <View style={styles.mentionNameLine}>
+                              <Text style={styles.mentionDisplayName} numberOfLines={1}>
+                                {candidate.displayName}
+                              </Text>
+                              <Text style={styles.mentionName} numberOfLines={1}>
+                                @{candidate.name}
+                              </Text>
+                            </View>
+                            <AgentMetaLine summary={pickerRuntimes.get(candidate.agentId)} />
                           </View>
                           {section.key === "directory" && <Text style={styles.mentionAddHint}>Add</Text>}
                         </Pressable>
@@ -1258,14 +1268,20 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: 1,
   },
+  mentionNameLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
   mentionDisplayName: {
     color: colors.text,
     fontSize: 14,
     fontWeight: "600",
   },
   mentionName: {
-    color: colors.textSecondary,
+    color: colors.textMuted,
     fontSize: 12,
+    flexShrink: 1,
   },
   inputContainer: {
     flex: 1,
