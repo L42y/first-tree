@@ -186,11 +186,11 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
       keyboardVerticalOffset={0}
     >
       <View style={styles.content}>
+        {/* One heading, not three: the kicker says what this is, the question
+            says what it asks. "You need to choose" above the question was a
+            third line of chrome saying neither. */}
         <View style={styles.header}>
-          <View style={styles.headerText}>
-            <Text style={styles.kicker}>Decision needed</Text>
-            <Text style={styles.title}>{isClarify ? "Ask about this decision" : "You need to choose"}</Text>
-          </View>
+          <Text style={styles.kicker}>{isClarify ? "Ask about this decision" : "Decision needed"}</Text>
           <Pressable onPress={() => router.back()} hitSlop={12} style={styles.closeButton}>
             <Ionicons name="close" size={20} color={colors.textSecondary} />
           </Pressable>
@@ -202,15 +202,14 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="interactive"
         >
-          <View style={styles.decisionCard}>
-            <Text style={styles.questionText}>{presentation.decision || "The agent did not provide a question."}</Text>
-            {presentation.recommendation ? (
-              <View style={styles.recommendation}>
-                <Text style={styles.recommendationLabel}>Recommended</Text>
-                <Text style={styles.recommendationText}>{presentation.recommendation}</Text>
-              </View>
-            ) : null}
-          </View>
+          <Text style={styles.questionText}>{presentation.decision || "The agent did not provide a question."}</Text>
+
+          {presentation.recommendation ? (
+            <View style={styles.recommendation}>
+              <Text style={styles.recommendationLabel}>Recommended</Text>
+              <Text style={styles.recommendationText}>{presentation.recommendation}</Text>
+            </View>
+          ) : null}
 
           <View style={styles.modeTabs}>
             <Pressable
@@ -389,9 +388,13 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+    // A flex child's default `minHeight: auto` lets it keep its content height
+    // instead of shrinking, which is how a half-height sheet ended up painting
+    // the question over the header and the Skip button over the input.
+    minHeight: 0,
     gap: 14,
     paddingHorizontal: 18,
-    paddingTop: 24,
+    paddingTop: 20,
     paddingBottom: 16,
   },
   loading: {
@@ -399,14 +402,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   header: {
-    alignItems: "flex-start",
+    alignItems: "center",
     flexDirection: "row",
+    flexShrink: 0,
     gap: 12,
     justifyContent: "space-between",
-  },
-  headerText: {
-    flex: 1,
-    gap: 3,
   },
   kicker: {
     color: colors.accent,
@@ -414,11 +414,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.7,
     textTransform: "uppercase",
-  },
-  title: {
-    color: colors.text,
-    fontSize: 17,
-    fontWeight: "800",
   },
   closeButton: {
     alignItems: "center",
@@ -430,24 +425,18 @@ const styles = StyleSheet.create({
   },
   scroll: {
     flex: 1,
+    flexShrink: 1,
+    minHeight: 0,
   },
   scrollContent: {
     gap: 14,
     paddingBottom: 12,
   },
-  decisionCard: {
-    backgroundColor: colors.surfaceStrong,
-    borderColor: colors.border,
-    borderRadius: 20,
-    gap: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-  },
   questionText: {
     color: colors.text,
-    fontSize: 21,
+    fontSize: 19,
     fontWeight: "700",
-    lineHeight: 28,
+    lineHeight: 25,
   },
   recommendation: {
     backgroundColor: colors.surface,
@@ -597,6 +586,7 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   footer: {
+    flexShrink: 0,
     alignItems: "center",
     flexDirection: "row",
     gap: 10,

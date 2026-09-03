@@ -94,7 +94,11 @@ export default function RootLayout() {
                     presentation: "formSheet",
                     headerShown: false,
                     contentStyle: { backgroundColor: colors.bg },
-                    sheetAllowedDetents: [0.5, 1],
+                    // A question, its recommendation, the options and the
+                    // action row do not fit in half a screen; opening at a
+                    // detent that cannot hold them is what made the sheet look
+                    // broken before it was even scrolled.
+                    sheetAllowedDetents: [0.7, 1],
                     sheetInitialDetentIndex: 0,
                     sheetGrabberVisible: true,
                     sheetCornerRadius: 24,
