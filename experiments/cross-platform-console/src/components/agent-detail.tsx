@@ -1,25 +1,13 @@
-import {
-  ActivityIndicator,
-  Alert,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  TextInput,
-  Text,
-  View,
-} from "react-native";
-
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-
 import type { Agent } from "@first-tree/shared";
 import { agentSchema } from "@first-tree/shared";
-
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { router } from "expo-router";
+import { useState } from "react";
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Avatar } from "~/components/avatar";
 import { api, withOrg } from "~/lib/api";
-import { listMyClients, updateAgent } from "~/lib/team-api";
 import { createTaskChat } from "~/lib/chats-api";
-import { router } from "expo-router";
+import { listMyClients, updateAgent } from "~/lib/team-api";
 import { colors } from "~/lib/theme";
 
 /**
@@ -47,8 +35,7 @@ export function AgentDetailContent({
 
   const { data, isLoading, error } = useQuery<Agent>({
     queryKey: ["agent", uuid],
-    queryFn: async () =>
-      agentSchema.parse(await api.get<unknown>(withOrg(`/agents/${encodeURIComponent(uuid)}`))),
+    queryFn: async () => agentSchema.parse(await api.get<unknown>(withOrg(`/agents/${encodeURIComponent(uuid)}`))),
   });
 
   const isHuman = data?.type === "human";
@@ -128,8 +115,7 @@ export function AgentDetailContent({
 
   const suspended = data.status === "suspended";
   const clients = clientsQuery.data ?? [];
-  const runtimeProvider =
-    provider ?? (data as unknown as { runtimeProvider?: string }).runtimeProvider ?? "unknown";
+  const runtimeProvider = provider ?? (data as unknown as { runtimeProvider?: string }).runtimeProvider ?? "unknown";
 
   const facts: Array<[string, string | null]> = [
     ["Type", isHuman ? "Human" : "Agent"],
@@ -190,10 +176,7 @@ export function AgentDetailContent({
               <Pressable
                 key={option}
                 onPress={() => setEditVisibility(option)}
-                style={[
-                  styles.segment,
-                  (editVisibility ?? data.visibility) === option && styles.segmentActive,
-                ]}
+                style={[styles.segment, (editVisibility ?? data.visibility) === option && styles.segmentActive]}
               >
                 <Text
                   style={[
@@ -209,11 +192,7 @@ export function AgentDetailContent({
           <Pressable
             disabled={acting}
             onPress={() => void saveEdit()}
-            style={({ pressed }) => [
-              styles.saveButton,
-              acting && styles.disabled,
-              pressed && styles.pressed,
-            ]}
+            style={({ pressed }) => [styles.saveButton, acting && styles.disabled, pressed && styles.pressed]}
           >
             {acting ? (
               <ActivityIndicator size="small" color={colors.accentText} />
@@ -223,16 +202,16 @@ export function AgentDetailContent({
           </Pressable>
         </View>
       ) : (
-      <View style={styles.card}>
-        {facts.map(([label, value]) =>
-          value ? (
-            <View key={label} style={styles.factRow}>
-              <Text style={styles.factLabel}>{label}</Text>
-              <Text style={styles.factValue}>{value}</Text>
-            </View>
-          ) : null,
-        )}
-      </View>
+        <View style={styles.card}>
+          {facts.map(([label, value]) =>
+            value ? (
+              <View key={label} style={styles.factRow}>
+                <Text style={styles.factLabel}>{label}</Text>
+                <Text style={styles.factValue}>{value}</Text>
+              </View>
+            ) : null,
+          )}
+        </View>
       )}
 
       {!isHuman && (

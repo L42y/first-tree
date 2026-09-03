@@ -1,6 +1,5 @@
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-
 import type { Message } from "@first-tree/shared";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { MarkdownText } from "~/components/markdown-text";
 import type { ParsedRequest } from "~/lib/ask";
 import { colors } from "~/lib/theme";
@@ -89,9 +88,7 @@ export function RequestDock({
                     {multiSelect ? `${isSelected ? "☑" : "☐"} ` : ""}
                     {option.label}
                   </Text>
-                  {option.description ? (
-                    <Text style={styles.optionDescription}>{option.description}</Text>
-                  ) : null}
+                  {option.description ? <Text style={styles.optionDescription}>{option.description}</Text> : null}
                 </Pressable>
               );
             })}

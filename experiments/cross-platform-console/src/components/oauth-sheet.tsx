@@ -1,10 +1,9 @@
-import type { OAuthCompletion, SignInProvider } from "~/lib/oauth";
-import { isCompletionPath, parseCompletionUrl } from "~/lib/oauth";
-import { oauthStartUrl } from "~/lib/oauth";
-import { colors } from "~/lib/theme";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
-import { WebView } from "react-native-webview";
 import type { WebViewNavigation } from "react-native-webview";
+import { WebView } from "react-native-webview";
+import type { OAuthCompletion, SignInProvider } from "~/lib/oauth";
+import { isCompletionPath, oauthStartUrl, parseCompletionUrl } from "~/lib/oauth";
+import { colors } from "~/lib/theme";
 
 /**
  * Native OAuth sheet: an in-app browser (react-native-webview) running the

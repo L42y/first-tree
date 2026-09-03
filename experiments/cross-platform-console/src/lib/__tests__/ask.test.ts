@@ -1,6 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-
 import type { Message } from "@first-tree/shared";
+import { describe, expect, it, vi } from "vitest";
 
 // ask.ts reaches the network through ./api, which transitively imports
 // AsyncStorage; the parsing under test needs none of it.
@@ -52,10 +51,7 @@ describe("parseAskRequest", () => {
   it("degrades to a free-text ask when an option is malformed", () => {
     const parsed = parseAskRequest(
       requestMessage({
-        options: [
-          { label: "this label is far too many words to pass", description: "d" },
-          option("Fine"),
-        ],
+        options: [{ label: "this label is far too many words to pass", description: "d" }, option("Fine")],
       }),
     );
     expect(parsed).not.toBeNull();
@@ -64,9 +60,7 @@ describe("parseAskRequest", () => {
   });
 
   it("degrades rather than vanishing when a description is missing", () => {
-    const parsed = parseAskRequest(
-      requestMessage({ options: [{ label: "Yes" }, { label: "No" }] }),
-    );
+    const parsed = parseAskRequest(requestMessage({ options: [{ label: "Yes" }, { label: "No" }] }));
     expect(parsed).not.toBeNull();
     expect(parsed?.request.options).toBeUndefined();
   });

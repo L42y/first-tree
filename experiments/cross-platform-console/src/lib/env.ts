@@ -12,9 +12,7 @@
 
 const DEFAULT_API_BASE_URL = "https://dev.cloud.first-tree.ai";
 
-export const API_BASE_URL =
-  (process.env.EXPO_PUBLIC_API_BASE_URL as string | undefined) ??
-  DEFAULT_API_BASE_URL;
+export const API_BASE_URL = (process.env.EXPO_PUBLIC_API_BASE_URL as string | undefined) ?? DEFAULT_API_BASE_URL;
 
 export const API_BASE = `${API_BASE_URL}/api/v1`;
 

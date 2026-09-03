@@ -90,19 +90,12 @@ export function Avatar({
   const isHuman = kind === "human";
   return (
     <View style={[styles.wrap, { width: size, height: size }]}>
-      <View
-        style={[
-          isHuman ? styles.humanRing : null,
-          { width: size, height: size, borderRadius: 9999 },
-        ]}
-      >
+      <View style={[isHuman ? styles.humanRing : null, { width: size, height: size, borderRadius: 9999 }]}>
         {imageUrl ? (
           <Image source={{ uri: imageUrl }} style={[styles.image, { width: size, height: size }]} />
         ) : (
           <View style={[styles.disc, { width: size, height: size, backgroundColor: hue }]}>
-            <Text style={[styles.initials, { fontSize: Math.round(size * 0.36) }]}>
-              {initialsFor(name)}
-            </Text>
+            <Text style={[styles.initials, { fontSize: Math.round(size * 0.36) }]}>{initialsFor(name)}</Text>
           </View>
         )}
       </View>

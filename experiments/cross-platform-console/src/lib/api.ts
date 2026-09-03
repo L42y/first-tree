@@ -1,6 +1,6 @@
 import { API_BASE, TOKEN_KEY } from "./env";
-import { appEvents, AUTH_LOGOUT_EVENT } from "./events";
-import { getItem, removeItem, setItem, type StoredTokens } from "./storage";
+import { AUTH_LOGOUT_EVENT, appEvents } from "./events";
+import { getItem, removeItem, type StoredTokens, setItem } from "./storage";
 
 let selectedOrganizationId: string | null = null;
 

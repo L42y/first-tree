@@ -119,10 +119,7 @@ export function CollapsingHeaderBar({
   });
 
   return (
-    <View
-      style={[styles.barContainer, { height: insets.top + COLLAPSED_BAR_HEIGHT }]}
-      pointerEvents="box-none"
-    >
+    <View style={[styles.barContainer, { height: insets.top + COLLAPSED_BAR_HEIGHT }]} pointerEvents="box-none">
       <Animated.View style={[StyleSheet.absoluteFill, styles.barBackground, { opacity: barOpacity }]} />
       <Animated.View style={[styles.barBorder, { opacity: barOpacity }]} />
       <View style={[styles.barRow, { top: insets.top }]}>

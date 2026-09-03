@@ -21,10 +21,7 @@ export async function listDocs(
   input: { status?: DocStatus; limit?: number; slug?: string } = {},
   signal?: AbortSignal,
 ): Promise<{ items: DocSummary[] }> {
-  return api.get<{ items: DocSummary[] }>(
-    `${withOrg("/documents")}${query({ ...input })}`,
-    { signal },
-  );
+  return api.get<{ items: DocSummary[] }>(`${withOrg("/documents")}${query({ ...input })}`, { signal });
 }
 
 /** Resolve a slug to its doc id via the list surface, then fetch the full document. */

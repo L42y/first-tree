@@ -1,15 +1,6 @@
 import type { MeMembership, OrgBrief } from "@first-tree/shared";
 import { useQueryClient } from "@tanstack/react-query";
-import {
-  createContext,
-  type ReactNode,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-import { fetchMe, type MeResponse } from "./auth-api";
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
   clearStoredTokens,
   getApiSelectedOrganizationId,
@@ -17,8 +8,9 @@ import {
   setApiSelectedOrganizationId,
   setStoredTokens,
 } from "./api";
-import { ADMIN_WS_ORG_CHANGED_EVENT, appEvents, AUTH_LOGOUT_EVENT } from "./events";
+import { fetchMe, type MeResponse } from "./auth-api";
 import { SELECTED_ORG_KEY } from "./env";
+import { ADMIN_WS_ORG_CHANGED_EVENT, AUTH_LOGOUT_EVENT, appEvents } from "./events";
 import { getItem, removeItem, setItem } from "./storage";
 
 type MeUser = NonNullable<MeResponse["user"]>;

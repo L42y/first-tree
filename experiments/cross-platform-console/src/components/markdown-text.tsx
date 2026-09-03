@@ -1,7 +1,7 @@
 import Constants from "expo-constants";
 import { StyleSheet, View } from "react-native";
-import Markdown from "react-native-markdown-display";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
+import Markdown from "react-native-markdown-display";
 
 import { colors } from "~/lib/theme";
 

@@ -1,6 +1,5 @@
-import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
-
 import type { Message } from "@first-tree/shared";
+import { Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { MarkdownText } from "~/components/markdown-text";
 import { colors } from "~/lib/theme";
 
@@ -11,9 +10,11 @@ import { colors } from "~/lib/theme";
  * chip, instead of the blank bubbles object content used to produce.
  */
 export function MessageCard({ message }: { message: Message }) {
-  const content = (typeof message.content === "object" && message.content !== null
-    ? message.content
-    : {}) as { url?: string; body?: string; title?: string };
+  const content = (typeof message.content === "object" && message.content !== null ? message.content : {}) as {
+    url?: string;
+    body?: string;
+    title?: string;
+  };
 
   const url = typeof content.url === "string" ? content.url : null;
   const body = typeof content.body === "string" ? content.body : "";
@@ -23,7 +24,10 @@ export function MessageCard({ message }: { message: Message }) {
       <View style={styles.card}>
         {body ? <MarkdownText value={body} /> : null}
         {url && (
-          <Pressable onPress={() => void Linking.openURL(url)} style={({ pressed }) => [styles.linkChip, pressed && { opacity: 0.75 }]}>
+          <Pressable
+            onPress={() => void Linking.openURL(url)}
+            style={({ pressed }) => [styles.linkChip, pressed && { opacity: 0.75 }]}
+          >
             <Text style={styles.linkText} numberOfLines={1}>
               {url}
             </Text>

@@ -1,5 +1,5 @@
-import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 
 import { getApiSelectedOrganizationId, getStoredTokens } from "./api";
 import { API_BASE_URL } from "./env";
@@ -37,8 +37,7 @@ export function useOrgRealtime(enabled: boolean): void {
     let attempt = 0;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const invalidateList = () =>
-      queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
+    const invalidateList = () => queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
 
     const connect = async () => {
       const tokens = await getStoredTokens();
@@ -119,4 +118,3 @@ export function useOrgRealtime(enabled: boolean): void {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, queryClient]);
 }
-

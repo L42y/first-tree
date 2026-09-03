@@ -17,6 +17,7 @@ import {
   type ViewToken,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { AddParticipantConfirm } from "~/components/add-participant-confirm";
 import { Avatar } from "~/components/avatar";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
 import { ChatParticipantsSheet } from "~/components/chat-participants";
@@ -36,7 +37,6 @@ import {
   saveChatReadState,
 } from "~/lib/chat-read-state";
 import {
-  addChatParticipants,
   getChat,
   getChatTokenUsage,
   listChatMessages,
@@ -60,10 +60,9 @@ import {
   shouldPrimeMentionOnFocus,
 } from "~/lib/mentions";
 import { buildParticipantRoster, summarizeParticipants } from "~/lib/participants";
-import { listOrgAgents } from "~/lib/team-api";
 import { colors } from "~/lib/theme";
 import { formatTokenCount, processedTokenCount } from "~/lib/token-usage";
-import { useDebouncedValue } from "~/lib/use-debounced-value";
+import { useAddParticipant, useDirectoryCandidates } from "~/lib/use-add-participant";
 
 const PAGE_SIZE = 50;
 
@@ -473,31 +472,13 @@ export function ChatDetailContent({
     [activeMentionTrigger, mentionCandidates],
   );
 
-  // Org identities the author could pull into the chat. Only queried while
-  // an `@` is actually being typed, and keyed on the typed term so the
-  // server-side search reaches past the roster's first page.
-  const mentionQuery = activeMentionTrigger?.query ?? "";
-  const debouncedMentionQuery = useDebouncedValue(mentionQuery, 200);
-  const directoryQuery = useQuery({
-    queryKey: ["agents", "org-list", debouncedMentionQuery],
-    queryFn: ({ signal }) => listOrgAgents({ query: debouncedMentionQuery || undefined }, signal),
+  // Org identities the author could pull into the chat, searched only while
+  // an `@` is actually open.
+  const { candidates: directoryCandidates } = useDirectoryCandidates({
+    query: activeMentionTrigger?.query ?? "",
     enabled: activeMentionTrigger != null,
-    staleTime: 30_000,
+    selfAgentId,
   });
-  const directoryCandidates = useMemo<DirectoryCandidate[]>(
-    () =>
-      (directoryQuery.data ?? [])
-        .filter((agent) => agent.name && agent.status !== "suspended" && agent.uuid !== selfAgentId)
-        .map((agent) => ({
-          agentId: agent.uuid,
-          name: agent.name as string,
-          displayName: agent.displayName,
-          type: agent.type,
-          avatarColorToken: agent.avatarColorToken,
-          avatarImageUrl: agent.avatarImageUrl,
-        })),
-    [directoryQuery.data, selfAgentId],
-  );
   const mentionSections = useMemo(
     () =>
       activeMentionTrigger
@@ -509,11 +490,7 @@ export function ChatDetailContent({
         : [],
     [activeMentionTrigger, directoryCandidates, mentionCandidates],
   );
-  // A directory pick is a membership change, so it asks first instead of
-  // silently adding someone to the conversation.
-  const [pendingAdd, setPendingAdd] = useState<DirectoryCandidate | null>(null);
-  const [addingParticipant, setAddingParticipant] = useState(false);
-  const [addError, setAddError] = useState<string | null>(null);
+  const addFlow = useAddParticipant(chatId);
 
   const applyMentionPick = useCallback(
     (candidate: (typeof mentionCandidates)[number]) => {
@@ -528,31 +505,19 @@ export function ChatDetailContent({
     [activeMentionTrigger, message],
   );
 
-  // Add, then mention: the roster refresh has to land before the insert so
+  // Add, then mention: the flow refreshes the roster before it resolves, so
   // the draft's `@name` resolves against a roster that contains them.
-  const confirmAddParticipant = useCallback(async () => {
-    if (!pendingAdd || addingParticipant) return;
-    setAddingParticipant(true);
-    setAddError(null);
-    try {
-      await addChatParticipants(chatId, [pendingAdd.agentId]);
-      await queryClient.invalidateQueries({ queryKey: ["chats", chatId] });
-      applyMentionPick(pendingAdd);
-      setPendingAdd(null);
-    } catch (err) {
-      setAddError(err instanceof Error ? err.message : "Could not add them to this chat");
-    } finally {
-      setAddingParticipant(false);
-    }
-  }, [addingParticipant, applyMentionPick, chatId, pendingAdd, queryClient]);
+  const confirmAddAndMention = useCallback(async () => {
+    const added = await addFlow.confirm();
+    if (added) applyMentionPick(added);
+  }, [addFlow, applyMentionPick]);
 
   // Abandoning the `@` token abandons the pending add with it; a stale
   // confirmation would otherwise sit over an unrelated draft.
   useEffect(() => {
     if (activeMentionTrigger) return;
-    setPendingAdd(null);
-    setAddError(null);
-  }, [activeMentionTrigger]);
+    addFlow.cancel();
+  }, [activeMentionTrigger, addFlow.cancel]);
 
   const handleComposerFocus = useCallback(() => {
     if (
@@ -777,6 +742,8 @@ export function ChatDetailContent({
       <ChatParticipantsSheet
         visible={participantsOpen}
         rows={participantRoster}
+        chatId={chatId}
+        selfAgentId={selfAgentId}
         onClose={() => setParticipantsOpen(false)}
       />
 
@@ -907,41 +874,12 @@ export function ChatDetailContent({
               style={[styles.mentionPicker, ComposerSurface ? styles.mentionPickerGlass : null]}
               {...(ComposerSurface ? { glassEffectStyle: "regular" as const, colorScheme: "dark" as const } : {})}
             >
-              {pendingAdd ? (
-                <View style={styles.mentionConfirm}>
-                  <Text style={styles.mentionConfirmTitle}>Add {pendingAdd.displayName} to this chat?</Text>
-                  <Text style={styles.mentionConfirmBody}>
-                    They aren't in this conversation yet. Adding them lets them read it and reply.
-                  </Text>
-                  {addError && <Text style={styles.mentionConfirmError}>{addError}</Text>}
-                  <View style={styles.mentionConfirmActions}>
-                    <Pressable
-                      onPress={() => {
-                        setPendingAdd(null);
-                        setAddError(null);
-                      }}
-                      disabled={addingParticipant}
-                      style={({ pressed }) => [styles.mentionConfirmButton, pressed && styles.mentionRowPressed]}
-                    >
-                      <Text style={styles.mentionConfirmCancelText}>Cancel</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={() => void confirmAddParticipant()}
-                      disabled={addingParticipant}
-                      style={({ pressed }) => [
-                        styles.mentionConfirmButton,
-                        styles.mentionConfirmPrimary,
-                        pressed && styles.mentionConfirmPrimaryPressed,
-                      ]}
-                    >
-                      {addingParticipant ? (
-                        <ActivityIndicator size="small" color={colors.accentText} />
-                      ) : (
-                        <Text style={styles.mentionConfirmAddText}>Add and mention</Text>
-                      )}
-                    </Pressable>
-                  </View>
-                </View>
+              {addFlow.pending ? (
+                <AddParticipantConfirm
+                  flow={addFlow}
+                  confirmLabel="Add and mention"
+                  onConfirm={() => void confirmAddAndMention()}
+                />
               ) : (
                 <ScrollView
                   keyboardShouldPersistTaps="handled"
@@ -957,7 +895,7 @@ export function ChatDetailContent({
                           onPress={() =>
                             section.key === "participants"
                               ? applyMentionPick(candidate)
-                              : setPendingAdd(candidate as DirectoryCandidate)
+                              : addFlow.request(candidate as DirectoryCandidate)
                           }
                           style={({ pressed }) => [styles.mentionRow, pressed && styles.mentionRowPressed]}
                         >
@@ -1314,52 +1252,6 @@ const styles = StyleSheet.create({
   mentionAddHint: {
     color: colors.accent,
     fontSize: 12,
-    fontWeight: "600",
-  },
-  mentionConfirm: {
-    padding: 12,
-    gap: 6,
-  },
-  mentionConfirmTitle: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: "600",
-  },
-  mentionConfirmBody: {
-    color: colors.textSecondary,
-    fontSize: 12,
-  },
-  mentionConfirmError: {
-    color: colors.danger,
-    fontSize: 12,
-  },
-  mentionConfirmActions: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    gap: 8,
-    paddingTop: 4,
-  },
-  mentionConfirmButton: {
-    minWidth: 88,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 10,
-  },
-  mentionConfirmPrimary: {
-    backgroundColor: colors.accent,
-  },
-  mentionConfirmPrimaryPressed: {
-    opacity: 0.8,
-  },
-  mentionConfirmCancelText: {
-    color: colors.textSecondary,
-    fontSize: 14,
-  },
-  mentionConfirmAddText: {
-    color: colors.accentText,
-    fontSize: 14,
     fontWeight: "600",
   },
   mentionLabels: {
