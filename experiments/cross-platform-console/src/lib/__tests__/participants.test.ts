@@ -1,12 +1,7 @@
 import type { ChatParticipantDetail, Message } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 
-import {
-  buildParticipantRoster,
-  formatLastActive,
-  participantRoleLabel,
-  summarizeParticipants,
-} from "../participants";
+import { buildParticipantRoster, formatLastActive, participantRoleLabel, summarizeParticipants } from "../participants";
 
 const participant = (
   agentId: string,

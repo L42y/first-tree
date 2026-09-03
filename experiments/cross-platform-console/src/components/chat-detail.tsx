@@ -32,6 +32,7 @@ import {
   flattenNewestFirstMessages,
   formatNewMessages,
   getChatReadState,
+  isAtNewestEdge,
   saveChatReadState,
 } from "~/lib/chat-read-state";
 import {
@@ -61,11 +62,21 @@ import { formatTokenCount, processedTokenCount } from "~/lib/token-usage";
 
 const PAGE_SIZE = 50;
 
+/** VirtualizedList captures these once; they must never change identity. */
+const VIEWABILITY_CONFIG = { itemVisiblePercentThreshold: 50 } as const;
+
 type TimelineItem =
   | { kind: "message"; key: string; message: Message }
   | { kind: "divider"; key: string; count: number };
 
 type MessagesCache = InfiniteData<PaginatedMessages, string | undefined>;
+
+/** Timeline rows are messages or the unread ribbon; only the former carry an id. */
+function timelineMessageId(item: unknown): string | null {
+  if (!item || typeof item !== "object") return null;
+  const row = item as { kind?: unknown; message?: { id?: unknown } };
+  return row.kind === "message" && typeof row.message?.id === "string" ? row.message.id : null;
+}
 
 function patchFirstMessagePage(
   previous: MessagesCache | undefined,
@@ -99,15 +110,11 @@ export function ChatDetailContent({
   const composerRef = useRef<LiveMarkdownInputHandle>(null);
   const focusPrimedRef = useRef(false);
   const autoPrimedDraftRef = useRef(false);
-  // Set when messages first arrive (or after sending) so the next
-  // onContentSizeChange scrolls to the latest message exactly once.
-  const pendingScrollRef = useRef(false);
   const readLoadedRef = useRef(false);
   const bottomVisibleRef = useRef<string | null>(null);
   const latestKnownRef = useRef<string | null>(null);
   const serverSyncedRef = useRef<string | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const initialScrollAnchorRef = useRef<string | null>(null);
   const [frozenUnreadAnchorId, setFrozenUnreadAnchorId] = useState<string | null>(null);
   const [sessionHighestId, setSessionHighestId] = useState<string | null>(null);
   const [readReady, setReadReady] = useState(false);
@@ -122,8 +129,6 @@ export function ChatDetailContent({
   // behind the keyboard on iOS.
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const scrollOffsetRef = useRef(0);
-  const listHeightRef = useRef(0);
-  const messageLayoutsRef = useRef(new Map<string, { y: number; height: number }>());
   useEffect(() => {
     if (Platform.OS !== "ios") return;
     const showSub = Keyboard.addListener("keyboardDidShow", (e) => setKeyboardHeight(e.endCoordinates.height));
@@ -165,6 +170,16 @@ export function ChatDetailContent({
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
 
+  // The timeline renders inverted: index 0 is the newest message and scroll
+  // offset 0 is the bottom of the screen. That makes "show the newest message"
+  // a fixed coordinate instead of a scrollToIndex into markdown bubbles whose
+  // heights are still being measured — which is what used to drop the reader
+  // at a random position on open and yank them back to the previous message
+  // after sending.
+  const scrollToNewest = useCallback((animated: boolean) => {
+    listRef.current?.scrollToOffset({ offset: 0, animated });
+  }, []);
+
   const flushReadState = useCallback(() => {
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
@@ -195,12 +210,9 @@ export function ChatDetailContent({
     setFrozenUnreadAnchorId(null);
     setSessionHighestId(null);
     setReadReady(false);
-    initialScrollAnchorRef.current = null;
-    pendingScrollRef.current = true;
 
     void getChatReadState(chatId).then((previousState) => {
       if (!active) return;
-      initialScrollAnchorRef.current = previousState?.bottomVisibleMessageId ?? null;
       setFrozenUnreadAnchorId(previousState?.latestKnownMessageId ?? null);
       readLoadedRef.current = true;
       setReadReady(true);
@@ -228,11 +240,6 @@ export function ChatDetailContent({
       void queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
     });
   }, [chatId, canMarkRead, readReady, queryClient]);
-
-  const messageCount = (messagesQuery.data?.pages ?? []).reduce((total, page) => total + page.items.length, 0);
-  useEffect(() => {
-    if (messageCount > 0) pendingScrollRef.current = true;
-  }, [messageCount]);
 
   const messages = useMemo(
     () => flattenNewestFirstMessages((messagesQuery.data?.pages ?? []).map((page) => page.items)),
@@ -290,15 +297,11 @@ export function ChatDetailContent({
     const divider: TimelineItem = { kind: "divider", key: "unread-divider", count: unreadCount };
     return [...messageItems.slice(0, dividerInsertIndex), divider, ...messageItems.slice(dividerInsertIndex)];
   }, [dividerInsertIndex, messages, unreadCount]);
+  // The list renders inverted, so it consumes the same rows newest-first.
+  const invertedTimeline = useMemo<TimelineItem[]>(() => [...timeline].reverse(), [timeline]);
 
-  // Markdown bubbles measure asynchronously, so content height keeps growing
-  // after the first onContentSizeChange. Scrolling to the end a single time
-  // therefore lands partway inside the newest message when that message is
-  // long. Follow the bottom until the reader takes over by dragging.
-  const userScrolledRef = useRef(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: chatId changes when the route switches chats.
   useEffect(() => {
-    userScrolledRef.current = false;
     focusPrimedRef.current = false;
     autoPrimedDraftRef.current = false;
   }, [chatId]);
@@ -333,7 +336,8 @@ export function ChatDetailContent({
   // Roster ordered by who spoke last: the header names the currently active
   // people first, and the sheet spells the same order out with activity times.
   const participantRoster = useMemo(
-    () => buildParticipantRoster(chat?.participants ?? [], messages, { agentId: selfAgentId, senderIds: selfSenderIds }),
+    () =>
+      buildParticipantRoster(chat?.participants ?? [], messages, { agentId: selfAgentId, senderIds: selfSenderIds }),
     [chat?.participants, messages, selfAgentId, selfSenderIds],
   );
   const headerPeer = useMemo(
@@ -548,9 +552,9 @@ export function ChatDetailContent({
     setCaret(0);
     setSending(true);
     setSendError(null);
-    // Sending re-attaches the view to the bottom even if the reader had
-    // scrolled up to look back through the thread.
-    userScrolledRef.current = false;
+    // Sending re-attaches the view to the newest message even if the reader
+    // had scrolled up to look back through the thread.
+    scrollToNewest(false);
 
     try {
       const saved = await sendChatMessage(chatId, text, mentions);
@@ -567,8 +571,7 @@ export function ChatDetailContent({
       serverSyncedRef.current = saved.id;
       setSessionHighestId(saved.id);
       void saveChatReadState(chatId, saved.id, saved.id);
-      pendingScrollRef.current = true;
-      listRef.current?.scrollToEnd({ animated: true });
+      scrollToNewest(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Send failed";
       // Re-show the message so the user can retry.
@@ -583,54 +586,40 @@ export function ChatDetailContent({
     } finally {
       setSending(false);
     }
-  }, [effectiveSendMentions, message, memberId, openAsk, queryClient, sendBlockedByMentionGate, sending, chatId]);
+  }, [
+    effectiveSendMentions,
+    message,
+    memberId,
+    openAsk,
+    queryClient,
+    scrollToNewest,
+    sendBlockedByMentionGate,
+    sending,
+    chatId,
+  ]);
   const isLoading = chatQuery.isLoading || messagesQuery.isLoading;
   const error = chatQuery.error ?? messagesQuery.error;
-  const scrollToInitialAnchor = useCallback(() => {
-    const anchorId = initialScrollAnchorRef.current;
-    if (!anchorId) {
-      listRef.current?.scrollToEnd({ animated: false });
-      return;
-    }
-    const anchorIndex = findMessageIndexById(messages, anchorId);
-    // A snapshot can age out of the newest 50 messages. Fall back to the tip
-    // instead of scrolling to an unrelated row at the top of the window.
-    if (anchorIndex < 0) {
-      initialScrollAnchorRef.current = null;
-      listRef.current?.scrollToEnd({ animated: false });
-      return;
-    }
-    listRef.current?.scrollToIndex({ animated: false, index: anchorIndex, viewPosition: 1 });
-  }, [messages]);
+  // Parked at the newest edge means everything is read: there is nothing below
+  // the fold for the "N new messages" pill to point at.
+  const syncReadAtNewestEdge = useCallback(() => {
+    if (!readReady) return;
+    if (!isAtNewestEdge(scrollOffsetRef.current)) return;
+    const newest = messages[messages.length - 1];
+    if (!newest) return;
+    bottomVisibleRef.current = newest.id;
+    setSessionHighestId((previous) => (previous === newest.id ? previous : newest.id));
+    scheduleReadStateSave();
+  }, [messages, readReady, scheduleReadStateSave]);
 
-  // AsyncStorage and the first network page resolve independently. Do not
-  // perform the one-shot scroll until the read pair has resolved; otherwise a
-  // fast first paint sends the viewer to the tip before the unread anchor is
-  // known.
-  useEffect(() => {
-    if (!readReady || messages.length === 0 || !pendingScrollRef.current || userScrolledRef.current) return;
-    pendingScrollRef.current = false;
-    requestAnimationFrame(() => scrollToInitialAnchor());
-  }, [messages.length, readReady, scrollToInitialAnchor]);
-
-  const handleViewableItemsChanged = useCallback(
+  // In inverted coordinates the lowest visible index is the newest message the
+  // reader has actually reached; everything newer than it is still unread.
+  const onViewableItems = useCallback(
     ({ viewableItems }: { viewableItems: ViewToken[] }) => {
-      const exposedBottom = scrollOffsetRef.current + listHeightRef.current - composerReserve;
-      const isExposed = (token: ViewToken) => {
-        if (!token.isViewable) return false;
-        const layout = messageLayoutsRef.current.get(token.key);
-        if (!layout) return true;
-        const exposedHeight = Math.max(0, Math.min(layout.height, exposedBottom - layout.y));
-        return exposedHeight / layout.height >= 0.98;
-      };
-      const bottom = viewableItems.filter(isExposed).reduce<(typeof viewableItems)[number] | null>((latest, token) => {
-        if (!latest || (token.index ?? -1) > (latest.index ?? -1)) return token;
-        return latest;
+      const newestVisible = viewableItems.reduce<ViewToken | null>((best, token) => {
+        if (!token.isViewable || token.index == null) return best;
+        return best == null || token.index < (best.index ?? Number.POSITIVE_INFINITY) ? token : best;
       }, null);
-      const messageId =
-        bottom?.item && typeof bottom.item === "object" && "id" in bottom.item
-          ? String((bottom.item as { id: unknown }).id)
-          : null;
+      const messageId = timelineMessageId(newestVisible?.item);
       if (!messageId) return;
       bottomVisibleRef.current = messageId;
 
@@ -642,8 +631,15 @@ export function ChatDetailContent({
       });
       scheduleReadStateSave();
     },
-    [composerReserve, messages, scheduleReadStateSave],
+    [messages, scheduleReadStateSave],
   );
+  // VirtualizedList refuses to swap this callback after mount, so the list
+  // gets one stable function that forwards to the current closure.
+  const viewableItemsRef = useRef(onViewableItems);
+  viewableItemsRef.current = onViewableItems;
+  const handleViewableItemsChanged = useCallback((info: { viewableItems: ViewToken[] }) => {
+    viewableItemsRef.current(info);
+  }, []);
 
   return (
     <View style={styles.container}>
@@ -705,9 +701,13 @@ export function ChatDetailContent({
       <FlatList
         ref={listRef}
         style={styles.timeline}
-        data={timeline}
+        data={invertedTimeline}
+        inverted
         keyExtractor={(item) => item.key}
-        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+        // Newest-first data means arrivals land at index 0. Hold the reader's
+        // place when they are reading history, and follow the tip when they
+        // are already near it.
+        maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 120 }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
         renderItem={({ item }) => {
@@ -735,57 +735,29 @@ export function ChatDetailContent({
           return askModalVisible && itemMessage.id === openAskId ? (
             <View style={styles.hiddenModalMessage}>{messageView}</View>
           ) : (
-            <View
-              onLayout={({ nativeEvent: { layout } }) => {
-                messageLayoutsRef.current.set(item.key, { y: layout.y, height: layout.height });
-              }}
-            >
-              {messageView}
-            </View>
+            messageView
           );
         }}
-        onStartReached={() => {
-          if (messagesQuery.hasPreviousPage && !messagesQuery.isFetchingPreviousPage) {
-            void messagesQuery.fetchPreviousPage();
+        // Scrolling up in an inverted list runs toward the end of the data,
+        // so older pages load here. Appending them leaves the visible rows
+        // exactly where they are.
+        onEndReached={() => {
+          if (messagesQuery.hasNextPage && !messagesQuery.isFetchingNextPage) {
+            void messagesQuery.fetchNextPage();
           }
         }}
         onEndReachedThreshold={0.5}
-        contentContainerStyle={[styles.messages, { paddingBottom: Math.max(8, composerReserve + 12) }]}
+        // The list is flipped, so the composer's clearance is a spacer at the
+        // head of the data rather than contentContainer padding.
+        ListHeaderComponent={<View style={{ height: Math.max(8, composerReserve + 12) }} />}
+        contentContainerStyle={styles.messages}
         scrollEventThrottle={16}
         onScroll={({ nativeEvent: { contentOffset } }) => {
           scrollOffsetRef.current = contentOffset.y;
-        }}
-        onLayout={({ nativeEvent: { layout } }) => {
-          listHeightRef.current = layout.height;
-        }}
-        onScrollBeginDrag={() => {
-          // The reader taking over ends the follow-the-bottom behaviour until
-          // they send something or reopen the chat.
-          userScrolledRef.current = true;
-          pendingScrollRef.current = false;
+          syncReadAtNewestEdge();
         }}
         onViewableItemsChanged={handleViewableItemsChanged}
-        viewabilityConfig={{ itemVisiblePercentThreshold: 98 }}
-        onScrollToIndexFailed={(info) => {
-          // Markdown/card bubbles have dynamic heights, so FlatList's own
-          // length estimate for an unmeasured, off-screen anchor is wrong on
-          // the first attempt. Retry once layout has caught up instead of
-          // leaving the reader wherever that first bad estimate landed.
-          setTimeout(() => {
-            listRef.current?.scrollToIndex({ animated: false, index: info.index, viewPosition: 1 });
-          }, 50);
-        }}
-        onContentSizeChange={() => {
-          if (!readReady || !pendingScrollRef.current || userScrolledRef.current) return;
-          // React Native can emit this callback repeatedly as markdown and
-          // images finish measuring. Consume the request before scheduling
-          // the one intentional initial/send scroll so later measurements do
-          // not drag the reader back to the bottom.
-          pendingScrollRef.current = false;
-          requestAnimationFrame(() => {
-            if (!userScrolledRef.current) scrollToInitialAnchor();
-          });
-        }}
+        viewabilityConfig={VIEWABILITY_CONFIG}
       />
 
       {openAsk && (
@@ -910,11 +882,7 @@ export function ChatDetailContent({
 
       {unreadLabel && (
         <Pressable
-          onPress={() => {
-            userScrolledRef.current = false;
-            pendingScrollRef.current = true;
-            listRef.current?.scrollToEnd({ animated: true });
-          }}
+          onPress={() => scrollToNewest(true)}
           style={[styles.unreadPill, { bottom: (openAsk ? 72 : composerReserve) + 12 }]}
         >
           <Text style={styles.unreadPillText}>↓ {unreadLabel}</Text>

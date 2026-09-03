@@ -86,3 +86,17 @@ export function formatNewMessages(count: number): string | null {
   if (count <= 0) return null;
   return count === 1 ? "1 new message" : `${count} new messages`;
 }
+
+/** Distance from the newest message that still counts as "the reader is there". */
+export const LIST_END_SLACK = 24;
+
+/**
+ * Is the reader parked at the newest message? The timeline renders inverted,
+ * so offset 0 is the newest edge and this is a coordinate check rather than a
+ * per-message visibility guess — a bubble taller than the viewport, or one
+ * tucked under the glass composer, used to leave the unread pill on screen
+ * pointing at messages the reader was already looking at.
+ */
+export function isAtNewestEdge(offsetY: number, slack: number = LIST_END_SLACK): boolean {
+  return offsetY <= slack;
+}

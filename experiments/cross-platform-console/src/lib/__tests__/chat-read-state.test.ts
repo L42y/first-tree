@@ -5,6 +5,7 @@ import {
   findFirstUnreadIndex,
   flattenNewestFirstMessages,
   formatNewMessages,
+  isAtNewestEdge,
 } from "../chat-read-state";
 
 describe("chat read state", () => {
@@ -40,5 +41,14 @@ describe("chat read state", () => {
     expect(formatNewMessages(0)).toBeNull();
     expect(formatNewMessages(1)).toBe("1 new message");
     expect(formatNewMessages(3)).toBe("3 new messages");
+  });
+
+  it("treats the newest edge of the inverted timeline as read", () => {
+    // Inverted list: offset 0 is the newest message at the bottom of the screen.
+    expect(isAtNewestEdge(0)).toBe(true);
+    // Within the slack — the last few pixels of rubber-band still count.
+    expect(isAtNewestEdge(20)).toBe(true);
+    // Scrolled up into history: newer messages are below the fold.
+    expect(isAtNewestEdge(400)).toBe(false);
   });
 });
