@@ -2,16 +2,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { ActivityIndicator, Keyboard, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { LiveMarkdownInput } from "~/components/live-markdown-input";
@@ -31,6 +22,19 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
   const queryClient = useQueryClient();
   const { agentId: selfAgentId } = useAuth();
   const insets = useSafeAreaInsets();
+  // Same deterministic keyboard handling the composer uses: lift by the exact
+  // keyboard height. KeyboardAvoidingView mis-measures inside a native modal
+  // and left the action row behind the keyboard.
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    if (Platform.OS !== "ios") return;
+    const show = Keyboard.addListener("keyboardDidShow", (event) => setKeyboardHeight(event.endCoordinates.height));
+    const hide = Keyboard.addListener("keyboardDidHide", () => setKeyboardHeight(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
   // Web parity (`ask-takeover.tsx`): answering and asking the agent are two
   // surfaces, not two tabs. Ask-agent mode replaces the answer surface so the
   // reply box and the question box never compete for the same footer actions.
@@ -156,7 +160,7 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
 
   if (openRequestsQuery.isLoading || !parsed) {
     return (
-      <View style={[styles.overlay, styles.loading]}>
+      <View style={styles.loading}>
         {openRequestsQuery.isError ? (
           <Text style={styles.errorText}>Couldn't load this question.</Text>
         ) : (
@@ -183,222 +187,221 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
     });
   };
 
+  // A phone is not a desktop with a centred card: a blocking decision with a
+  // long body, its options and a free-text answer IS the screen. Full height
+  // with a fixed bar top and bottom also gives the scroller a definite height
+  // to live in — a self-sizing sheet does not, which is why its contents kept
+  // ending up under the actions.
   return (
-    <View style={styles.overlay}>
-      <Pressable style={styles.backdrop} onPress={() => router.back()} accessibilityLabel="Show the chat" />
-      <KeyboardAvoidingView
-        style={styles.sheetWrap}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        keyboardVerticalOffset={0}
+    <View style={[styles.screen, { paddingBottom: keyboardHeight }]}>
+      <View style={[styles.topBar, { paddingTop: insets.top + 6 }]}>
+        <Text style={styles.kicker}>Question for you</Text>
+        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.headerLink}>
+          <Text style={styles.headerLinkText}>Show chat</Text>
+        </Pressable>
+      </View>
+
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
       >
-        <View style={styles.sheet}>
-          <View style={styles.grabber} />
+        {/* The ask, whole, as the agent wrote it. */}
+        <MarkdownText value={rawContent || "The agent did not provide a question."} />
 
-          {/* One scroller for the ask AND the answer surface, exactly as the
-              web card does it: when the sheet is shorter than its contents the
-              whole region scrolls while the actions below stay pinned, so
-              Submit is reachable at any height. */}
-          <ScrollView
-            style={styles.scroll}
-            contentContainerStyle={styles.scrollContent}
-            keyboardShouldPersistTaps="handled"
-            keyboardDismissMode="interactive"
-          >
-            <View style={styles.header}>
-              <Text style={styles.kicker}>Question for you</Text>
-              <Pressable onPress={() => router.back()} hitSlop={12} style={styles.headerLink}>
-                <Ionicons name="time-outline" size={14} color={colors.textMuted} />
-                <Text style={styles.headerLinkText}>Show chat</Text>
-              </Pressable>
-            </View>
-
-            {/* The ask, whole, as the agent wrote it. */}
-            <MarkdownText value={rawContent || "The agent did not provide a question."} />
-
-            {thread.length > 0 && (
-              <View style={styles.threadBlock}>
-                {thread.map((entry) => (
-                  <View key={entry.id} style={styles.threadEntry}>
-                    <Text style={styles.threadAuthor}>
-                      {entry.senderId === selfAgentId ? "You asked the agent" : "Agent response"}
-                    </Text>
-                    <MarkdownText value={typeof entry.content === "string" ? entry.content : ""} />
-                  </View>
-                ))}
+        {thread.length > 0 && (
+          <View style={styles.threadBlock}>
+            {thread.map((entry) => (
+              <View key={entry.id} style={styles.threadEntry}>
+                <Text style={styles.threadAuthor}>
+                  {entry.senderId === selfAgentId ? "You asked the agent" : "Agent response"}
+                </Text>
+                <MarkdownText value={typeof entry.content === "string" ? entry.content : ""} />
               </View>
-            )}
+            ))}
+          </View>
+        )}
 
-            <View style={styles.answerSurface}>
-              {askAgentOpen ? (
-                <>
-                  <Text style={styles.surfaceLabel}>What would you like the agent to clarify?</Text>
-                  <View style={styles.field}>
-                    <LiveMarkdownInput
-                      value={clarification}
-                      onChangeText={setClarification}
-                      placeholder="Ask a focused question about the context above…"
-                      placeholderTextColor={colors.textMuted}
-                      multiline
-                      minLines={3}
-                      maxLines={5}
-                      maxLength={4000}
-                      returnKeyType="send"
-                      submitBehavior="submit"
-                      onSubmitEditing={() => void askAgent()}
-                    />
-                  </View>
-                </>
-              ) : (
-                <>
-                  {options.length > 0 && (
-                    <View style={styles.options}>
-                      {options.map((option, index) => {
-                        const isSelected = selected.includes(index);
-                        return (
-                          <Pressable
-                            key={`${option.label}-${option.description ?? ""}`}
-                            accessibilityRole={multi ? "checkbox" : "radio"}
-                            accessibilityState={{ checked: isSelected }}
-                            onPress={() => toggleOption(index)}
-                            style={({ pressed }) => [
-                              styles.option,
-                              isSelected && styles.optionSelected,
-                              pressed && styles.pressed,
-                            ]}
-                          >
-                            <View
-                              style={[
-                                styles.choiceGlyph,
-                                multi && styles.choiceGlyphSquare,
-                                isSelected && styles.choiceGlyphActive,
-                              ]}
-                            >
-                              {isSelected && <Ionicons name="checkmark" size={13} color={colors.accentText} />}
-                            </View>
-                            <View style={styles.optionText}>
-                              <Text style={styles.optionLabel}>{option.label}</Text>
-                              {option.description ? (
-                                <Text style={styles.optionDescription}>{option.description}</Text>
-                              ) : null}
-                              {/* Web parity: the preview is the option's
+        <View style={styles.answerSurface}>
+          {askAgentOpen ? (
+            <>
+              <Text style={styles.surfaceLabel}>What would you like the agent to clarify?</Text>
+              <View style={styles.field}>
+                <LiveMarkdownInput
+                  value={clarification}
+                  onChangeText={setClarification}
+                  placeholder="Ask a focused question about the context above…"
+                  placeholderTextColor={colors.textMuted}
+                  multiline
+                  minLines={3}
+                  maxLines={5}
+                  maxLength={4000}
+                  returnKeyType="send"
+                  submitBehavior="submit"
+                  onSubmitEditing={() => void askAgent()}
+                />
+              </View>
+            </>
+          ) : (
+            <>
+              {options.length > 0 && (
+                <View style={styles.options}>
+                  {options.map((option, index) => {
+                    const isSelected = selected.includes(index);
+                    return (
+                      <Pressable
+                        key={`${option.label}-${option.description ?? ""}`}
+                        accessibilityRole={multi ? "checkbox" : "radio"}
+                        accessibilityState={{ checked: isSelected }}
+                        onPress={() => toggleOption(index)}
+                        style={({ pressed }) => [
+                          styles.option,
+                          isSelected && styles.optionSelected,
+                          pressed && styles.pressed,
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.choiceGlyph,
+                            multi && styles.choiceGlyphSquare,
+                            isSelected && styles.choiceGlyphActive,
+                          ]}
+                        >
+                          {isSelected && <Ionicons name="checkmark" size={13} color={colors.accentText} />}
+                        </View>
+                        <View style={styles.optionText}>
+                          <Text style={styles.optionLabel}>{option.label}</Text>
+                          {option.description ? (
+                            <Text style={styles.optionDescription}>{option.description}</Text>
+                          ) : null}
+                          {/* Web parity: the preview is the option's
                                   evidence, and only earns its space once that
                                   option is the one being chosen. */}
-                              {isSelected && option.preview ? (
-                                <Text style={styles.optionPreview}>{option.preview}</Text>
-                              ) : null}
-                            </View>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-                  )}
-
-                  {/* Always present, never behind a disclosure: with options it
-                      is the "something else" answer, without them it is the
-                      answer. */}
-                  <View style={styles.field}>
-                    <LiveMarkdownInput
-                      value={answer}
-                      onChangeText={setAnswer}
-                      placeholder={options.length > 0 ? "Other (type your own)…" : "Type your answer…"}
-                      placeholderTextColor={colors.textMuted}
-                      multiline
-                      // Web parity: a bare "Other" line beside options, a real
-                      // writing surface when the answer is only text.
-                      minLines={options.length > 0 ? 1 : 3}
-                      maxLines={options.length > 0 ? 4 : 6}
-                      maxLength={4000}
-                      returnKeyType={options.length === 0 ? "send" : "done"}
-                      submitBehavior={options.length === 0 ? "submit" : undefined}
-                      onSubmitEditing={() => {
-                        if (options.length === 0) void submit();
-                      }}
-                    />
-                  </View>
-                </>
+                          {isSelected && option.preview ? (
+                            <Text style={styles.optionPreview}>{option.preview}</Text>
+                          ) : null}
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                </View>
               )}
 
-              {error ? <Text style={styles.errorText}>{error}</Text> : null}
-            </View>
-          </ScrollView>
+              {/* Always present, never behind a disclosure: with options it
+                      is the "something else" answer, without them it is the
+                      answer. */}
+              <View style={styles.field}>
+                <LiveMarkdownInput
+                  value={answer}
+                  onChangeText={setAnswer}
+                  placeholder={options.length > 0 ? "Other (type your own)…" : "Type your answer…"}
+                  placeholderTextColor={colors.textMuted}
+                  multiline
+                  // Web parity: a bare "Other" line beside options, a real
+                  // writing surface when the answer is only text.
+                  minLines={options.length > 0 ? 1 : 3}
+                  maxLines={options.length > 0 ? 4 : 6}
+                  maxLength={4000}
+                  returnKeyType={options.length === 0 ? "send" : "done"}
+                  submitBehavior={options.length === 0 ? "submit" : undefined}
+                  onSubmitEditing={() => {
+                    if (options.length === 0) void submit();
+                  }}
+                />
+              </View>
+            </>
+          )}
 
-          {/* Pinned actions — Skip / Ask agent / Submit, like the web footer. */}
-          <View style={[styles.footer, { paddingBottom: 12 + insets.bottom }]}>
-            {askAgentOpen ? (
-              <>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => setAskAgentOpen(false)}
-                  disabled={busy}
-                  style={({ pressed }) => [styles.ghostButton, busy && styles.disabled, pressed && styles.pressed]}
-                >
-                  <Text style={styles.ghostText}>Cancel</Text>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => void askAgent()}
-                  disabled={!canAskAgent}
-                  style={({ pressed }) => [
-                    styles.primaryButton,
-                    !canAskAgent && styles.disabled,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  {submitting ? (
-                    <ActivityIndicator color={colors.accentText} size="small" />
-                  ) : (
-                    <Text style={styles.primaryText}>Ask agent</Text>
-                  )}
-                </Pressable>
-              </>
-            ) : (
-              <>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => void skip()}
-                  disabled={busy}
-                  style={({ pressed }) => [styles.ghostButton, busy && styles.disabled, pressed && styles.pressed]}
-                >
-                  <Text style={styles.ghostText}>Skip</Text>
-                </Pressable>
-                <View style={styles.footerSpacer} />
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => setAskAgentOpen(true)}
-                  disabled={busy}
-                  style={({ pressed }) => [styles.secondaryButton, busy && styles.disabled, pressed && styles.pressed]}
-                >
-                  <Text style={styles.secondaryText}>Ask agent</Text>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => void submit()}
-                  disabled={!canSubmit}
-                  style={({ pressed }) => [
-                    styles.primaryButton,
-                    !canSubmit && styles.disabled,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  {busy ? (
-                    <ActivityIndicator color={colors.accentText} size="small" />
-                  ) : (
-                    <Text style={styles.primaryText}>{options.length > 0 ? "Submit" : "Send answer"}</Text>
-                  )}
-                </Pressable>
-              </>
-            )}
-          </View>
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
         </View>
-      </KeyboardAvoidingView>
+      </ScrollView>
+
+      {/* Sticky action bar. Outside the scroller, so it is reachable no matter
+          how long the ask is. */}
+      <View style={[styles.footer, { paddingBottom: keyboardHeight > 0 ? 12 : insets.bottom + 12 }]}>
+        {askAgentOpen ? (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setAskAgentOpen(false)}
+              disabled={busy}
+              style={({ pressed }) => [styles.ghostButton, busy && styles.disabled, pressed && styles.pressed]}
+            >
+              <Text style={styles.ghostText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => void askAgent()}
+              disabled={!canAskAgent}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                !canAskAgent && styles.disabled,
+                pressed && styles.pressed,
+              ]}
+            >
+              {submitting ? (
+                <ActivityIndicator color={colors.accentText} size="small" />
+              ) : (
+                <Text style={styles.primaryText}>Ask agent</Text>
+              )}
+            </Pressable>
+          </>
+        ) : (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => void skip()}
+              disabled={busy}
+              style={({ pressed }) => [styles.ghostButton, busy && styles.disabled, pressed && styles.pressed]}
+            >
+              <Text style={styles.ghostText}>Skip</Text>
+            </Pressable>
+            <View style={styles.footerSpacer} />
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setAskAgentOpen(true)}
+              disabled={busy}
+              style={({ pressed }) => [styles.secondaryButton, busy && styles.disabled, pressed && styles.pressed]}
+            >
+              <Text style={styles.secondaryText}>Ask agent</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => void submit()}
+              disabled={!canSubmit}
+              style={({ pressed }) => [styles.primaryButton, !canSubmit && styles.disabled, pressed && styles.pressed]}
+            >
+              {busy ? (
+                <ActivityIndicator color={colors.accentText} size="small" />
+              ) : (
+                <Text style={styles.primaryText}>{options.length > 0 ? "Submit" : "Send answer"}</Text>
+              )}
+            </Pressable>
+          </>
+        )}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  overlay: {
+  // Full screen, three bands: fixed bar, one scroller, fixed action bar. The
+  // scroller is the only flexible band, and it is bounded by the screen — the
+  // guarantee a self-sizing sheet could never give it.
+  screen: {
     flex: 1,
-    justifyContent: "flex-end",
+    backgroundColor: colors.bg,
+  },
+  topBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    paddingHorizontal: 16,
+    paddingBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
   },
   field: {
     borderWidth: StyleSheet.hairlineWidth,
@@ -407,60 +410,25 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     overflow: "hidden",
   },
-  backdrop: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    backgroundColor: "rgba(0,0,0,0.55)",
-  },
   // `maxHeight: "90%"` only means anything against a parent with a definite
   // height. Without this the sheet grew past the screen and its scroller never
   // shrank, which is how the answer field ended up under the action row.
-  sheetWrap: {
-    flex: 1,
-    justifyContent: "flex-end",
-  },
   // The sheet grows with its contents up to a ceiling instead of being handed
   // a fixed fraction of the screen its contents may not fit in.
-  sheet: {
-    maxHeight: "92%",
-    backgroundColor: colors.bg,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    // Nothing inside may paint over the action row.
-    overflow: "hidden",
-  },
   loading: {
+    flex: 1,
+    backgroundColor: colors.bg,
     alignItems: "center",
     justifyContent: "center",
   },
-  grabber: {
-    alignSelf: "center",
-    marginTop: 8,
-    marginBottom: 2,
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.border,
-  },
   scroll: {
-    flexShrink: 1,
+    flex: 1,
   },
   scrollContent: {
     gap: 14,
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 16,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 12,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 24,
   },
   kicker: {
     color: colors.accent,

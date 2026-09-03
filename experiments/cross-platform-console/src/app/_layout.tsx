@@ -91,14 +91,13 @@ export default function RootLayout() {
                 <Stack.Screen
                   name="ask/[requestId]"
                   options={{
-                    // The sheet draws its own container so it can size to its
-                    // contents. A native form sheet handed it a fixed fraction
-                    // of the screen, and a question that did not fit came out
-                    // stacked on top of itself.
-                    presentation: "transparentModal",
-                    animation: "fade",
+                    // A blocking question with a long body, options and a
+                    // free-text answer is a screen on a phone, not a card
+                    // floating over one. Full height also gives the answer
+                    // surface somewhere to go when the keyboard is up.
+                    presentation: "modal",
                     headerShown: false,
-                    contentStyle: { backgroundColor: "transparent" },
+                    contentStyle: { backgroundColor: colors.bg },
                     gestureEnabled: true,
                   }}
                 />
