@@ -418,6 +418,7 @@ export function ChatDetailContent({
   // the area actually exposed above it, not the full FlatList viewport.
   const composerReserve = openAsk ? 0 : composerFooterHeight + keyboardHeight;
   const ComposerSurface = liquidGlass?.GlassView;
+  const PickerSurface = ComposerSurface ?? View;
 
   // Speaker-only chat roster. Routing uses immutable canonical names; the
   // display label is only for the picker row.
@@ -824,7 +825,15 @@ export function ChatDetailContent({
             </View>
           )}
           {activeMentionTrigger && visibleMentionCandidates.length > 0 && (
-            <View style={styles.mentionPicker}>
+            // Same material as the composer it sits on when the device has
+            // Liquid Glass: glass blurs and desaturates the timeline behind
+            // it, so names stay legible instead of colliding with message
+            // text. Everywhere else (Android, web, pre-26 iOS, an older dev
+            // client) falls back to the opaque panel.
+            <PickerSurface
+              style={[styles.mentionPicker, ComposerSurface ? styles.mentionPickerGlass : null]}
+              {...(ComposerSurface ? { glassEffectStyle: "regular" as const, colorScheme: "dark" as const } : {})}
+            >
               <ScrollView
                 keyboardShouldPersistTaps="handled"
                 style={styles.mentionList}
@@ -848,7 +857,7 @@ export function ChatDetailContent({
                   </Pressable>
                 ))}
               </ScrollView>
-            </View>
+            </PickerSurface>
           )}
           {ComposerSurface ? (
             <ComposerSurface
@@ -1133,8 +1142,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: colors.border,
-    // Opaque: the picker floats over the timeline, and a translucent panel
-    // let message text show through and collide with the candidate names.
+    // Fallback panel: opaque, because a translucent flat overlay let message
+    // text show through and collide with the candidate names.
     backgroundColor: colors.surfaceFloating,
     overflow: "hidden",
     shadowColor: "#000",
@@ -1142,6 +1151,12 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 6 },
     elevation: 8,
+  },
+  mentionPickerGlass: {
+    // The material supplies its own surface; a background color on top of it
+    // would flatten the glass back into a tinted panel.
+    backgroundColor: "transparent",
+    borderRadius: 20,
   },
   mentionList: {
     maxHeight: 168,
