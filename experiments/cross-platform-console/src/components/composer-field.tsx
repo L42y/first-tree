@@ -19,8 +19,10 @@ export const ComposerField = forwardRef<
   LiveMarkdownInputProps & {
     /** Rendered above the input inside the same card (token usage, a label). */
     header?: ReactNode;
+    /** Rendered beside the input — a send button, an attach control. */
+    trailing?: ReactNode;
   }
->(function ComposerField({ header, style, ...inputProps }, ref) {
+>(function ComposerField({ header, trailing, style, ...inputProps }, ref) {
   const liquidGlass = loadLiquidGlass();
   const Surface = liquidGlass?.GlassView;
 
@@ -34,6 +36,7 @@ export const ComposerField = forwardRef<
           style={[Surface ? styles.glassInput : styles.input, style]}
           placeholderTextColor={inputProps.placeholderTextColor ?? colors.textMuted}
         />
+        {trailing}
       </View>
     </>
   );

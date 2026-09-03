@@ -225,9 +225,10 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
   };
 
   // Shaped like the participants sheet, because that is the shape that works
-  // here: a bottom sheet capped against a full-height parent, everything in
-  // one scroller, and the actions sitting in the flow right under the input
-  // rather than pinned to the bottom edge fighting the keyboard.
+  // here: a bottom sheet capped against a full-height parent, and everything
+  // in one scroller. Skip and Show chat are header actions — the two ways out
+  // — while the input carries the two ways forward, so nothing is pinned to
+  // the bottom edge fighting the keyboard.
   return (
     <View style={[styles.overlay, { paddingBottom: keyboardHeight }]}>
       <Pressable style={styles.backdrop} onPress={() => router.back()} accessibilityLabel="Show the chat" />
@@ -236,9 +237,25 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
           <View style={styles.grabber} />
           <View style={styles.topBar}>
             <Text style={styles.kicker}>Question for you</Text>
-            <Pressable onPress={() => router.back()} hitSlop={12} style={styles.headerLink}>
-              <Text style={styles.headerLinkText}>Show chat</Text>
-            </Pressable>
+            <View style={styles.topActions}>
+              {/* Skip resolves the question without answering, so it belongs
+                  with the other ways out — not next to the send action. */}
+              <Pressable
+                onPress={() => void skip()}
+                disabled={busy}
+                hitSlop={8}
+                style={({ pressed }) => [styles.headerLink, busy && styles.disabled, pressed && styles.pressed]}
+              >
+                <Text style={styles.headerLinkText}>Skip</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => router.back()}
+                hitSlop={8}
+                style={({ pressed }) => [styles.headerLink, pressed && styles.pressed]}
+              >
+                <Text style={styles.headerLinkText}>Show chat</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
 
@@ -306,11 +323,50 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
             </View>
           )}
 
-          {askAgentOpen && <Text style={styles.surfaceLabel}>What would you like the agent to clarify?</Text>}
+          {/* What the input is for, sitting on it: answering the question, or
+              asking the agent about it. Two destinations for one box beats two
+              buttons competing for the same box. */}
+          <View style={styles.tabs}>
+            <Pressable
+              accessibilityRole="tab"
+              accessibilityState={{ selected: !askAgentOpen }}
+              onPress={() => setAskAgentOpen(false)}
+              style={({ pressed }) => [styles.tab, !askAgentOpen && styles.tabActive, pressed && styles.pressed]}
+            >
+              <Text style={[styles.tabText, !askAgentOpen && styles.tabTextActive]}>Answer</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="tab"
+              accessibilityState={{ selected: askAgentOpen }}
+              onPress={() => setAskAgentOpen(true)}
+              style={({ pressed }) => [styles.tab, askAgentOpen && styles.tabActive, pressed && styles.pressed]}
+            >
+              <Text style={[styles.tabText, askAgentOpen && styles.tabTextActive]}>Ask agent</Text>
+            </Pressable>
+          </View>
 
           {/* The chat's own composer, not a second input that behaves
               differently. */}
           <ComposerField
+            trailing={
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={askAgentOpen ? "Ask agent" : "Send answer"}
+                onPress={() => void (askAgentOpen ? askAgent() : submit())}
+                disabled={askAgentOpen ? !canAskAgent : !canSubmit}
+                style={({ pressed }) => [
+                  styles.sendButton,
+                  (askAgentOpen ? !canAskAgent : !canSubmit) && styles.disabled,
+                  pressed && styles.pressed,
+                ]}
+              >
+                {busy ? (
+                  <ActivityIndicator color={colors.accentText} size="small" />
+                ) : (
+                  <Ionicons name="arrow-up" size={18} color={colors.accentText} />
+                )}
+              </Pressable>
+            }
             value={askAgentOpen ? clarification : answer}
             onChangeText={askAgentOpen ? setClarification : setAnswer}
             placeholder={
@@ -333,76 +389,6 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
           />
 
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
-
-          {/* Actions live in the flow, under the answer they act on. Pinned to
-              the bottom edge they either fight the keyboard or sit half a
-              screen away from the thing being answered. */}
-          <View style={styles.actions}>
-            {askAgentOpen ? (
-              <>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => setAskAgentOpen(false)}
-                  disabled={busy}
-                  style={({ pressed }) => [styles.ghostButton, busy && styles.disabled, pressed && styles.pressed]}
-                >
-                  <Text style={styles.ghostText}>Cancel</Text>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => void askAgent()}
-                  disabled={!canAskAgent}
-                  style={({ pressed }) => [
-                    styles.primaryButton,
-                    !canAskAgent && styles.disabled,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  {submitting ? (
-                    <ActivityIndicator color={colors.accentText} size="small" />
-                  ) : (
-                    <Text style={styles.primaryText}>Ask agent</Text>
-                  )}
-                </Pressable>
-              </>
-            ) : (
-              <>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => void skip()}
-                  disabled={busy}
-                  style={({ pressed }) => [styles.ghostButton, busy && styles.disabled, pressed && styles.pressed]}
-                >
-                  <Text style={styles.ghostText}>Skip</Text>
-                </Pressable>
-                <View style={styles.actionSpacer} />
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => setAskAgentOpen(true)}
-                  disabled={busy}
-                  style={({ pressed }) => [styles.secondaryButton, busy && styles.disabled, pressed && styles.pressed]}
-                >
-                  <Text style={styles.secondaryText}>Ask agent</Text>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  onPress={() => void submit()}
-                  disabled={!canSubmit}
-                  style={({ pressed }) => [
-                    styles.primaryButton,
-                    !canSubmit && styles.disabled,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  {busy ? (
-                    <ActivityIndicator color={colors.accentText} size="small" />
-                  ) : (
-                    <Text style={styles.primaryText}>{options.length > 0 ? "Submit" : "Send answer"}</Text>
-                  )}
-                </Pressable>
-              </>
-            )}
-          </View>
         </ScrollView>
       </Animated.View>
     </View>
@@ -410,9 +396,6 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
 }
 
 const styles = StyleSheet.create({
-  // Full screen, three bands: fixed bar, one scroller, fixed action bar. The
-  // scroller is the only flexible band, and it is bounded by the screen — the
-  // guarantee a self-sizing sheet could never give it.
   // Same shell as the participants sheet: a full-height overlay gives the
   // sheet's percentage cap something definite to resolve against, and the
   // sheet grows with its contents until it hits that cap.
@@ -481,6 +464,11 @@ const styles = StyleSheet.create({
     letterSpacing: 0.7,
     textTransform: "uppercase",
   },
+  topActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
   headerLink: {
     flexDirection: "row",
     alignItems: "center",
@@ -511,13 +499,41 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     textTransform: "uppercase",
   },
-  surfaceLabel: {
-    color: colors.textSecondary,
-    fontSize: 13,
-    fontWeight: "600",
-  },
   options: {
     gap: 8,
+  },
+  tabs: {
+    flexDirection: "row",
+    alignSelf: "flex-start",
+    gap: 4,
+    padding: 3,
+    borderRadius: 12,
+    backgroundColor: colors.surface,
+  },
+  tab: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 9,
+  },
+  tabActive: {
+    backgroundColor: colors.surfaceStrong,
+  },
+  tabText: {
+    color: colors.textMuted,
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  tabTextActive: {
+    color: colors.text,
+  },
+  sendButton: {
+    alignItems: "center",
+    justifyContent: "center",
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    marginBottom: 3,
+    backgroundColor: colors.accent,
   },
   option: {
     alignItems: "flex-start",
@@ -576,54 +592,8 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
   },
-  actions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingTop: 4,
-  },
-  actionSpacer: {
-    flex: 1,
-  },
   // One filled action, one quiet one, and a plain text out. Three filled
   // slabs competing at the same weight was the "ugly" part.
-  ghostButton: {
-    alignItems: "center",
-    justifyContent: "center",
-    height: 40,
-    paddingHorizontal: 10,
-  },
-  ghostText: {
-    color: colors.textMuted,
-    fontSize: 15,
-    fontWeight: "500",
-  },
-  secondaryButton: {
-    alignItems: "center",
-    justifyContent: "center",
-    height: 40,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    backgroundColor: colors.surface,
-  },
-  secondaryText: {
-    color: colors.text,
-    fontSize: 15,
-    fontWeight: "500",
-  },
-  primaryButton: {
-    alignItems: "center",
-    justifyContent: "center",
-    height: 40,
-    paddingHorizontal: 20,
-    borderRadius: 20,
-    backgroundColor: colors.accent,
-  },
-  primaryText: {
-    color: colors.accentText,
-    fontSize: 15,
-    fontWeight: "600",
-  },
   disabled: {
     opacity: 0.45,
   },
