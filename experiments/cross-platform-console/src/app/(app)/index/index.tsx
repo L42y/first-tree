@@ -24,7 +24,7 @@ import { CollapsingHeaderBar, LargeTitle, useCollapsingHeaderScroll } from "~/co
 import { QuickActionsButton } from "~/components/quick-actions";
 import { QuickViews } from "~/components/quick-views";
 import { useAuth } from "~/lib/auth-context";
-import { fetchChatRowsPage, renameChat, setChatEngagement } from "~/lib/chats-api";
+import { fetchChatRowsPage, listMyCronJobs, renameChat, setChatEngagement } from "~/lib/chats-api";
 import { loadDrafts } from "~/lib/drafts";
 import { buildQuickViews } from "~/lib/quick-views";
 import { getItem, setItem } from "~/lib/storage";
@@ -158,11 +158,21 @@ export default function ChatListScreen() {
   }, [rows, search]);
 
   const draftsQuery = useQuery({ queryKey: ["drafts"], queryFn: () => loadDrafts(), refetchOnMount: "always" });
-  // Schedules are only listable per chat today, so the tile leaves its count
-  // unstated rather than claiming a zero it has not checked.
+  const cronQuery = useQuery({
+    queryKey: ["me", "cron-jobs"],
+    queryFn: ({ signal }) => listMyCronJobs(signal),
+    staleTime: 60_000,
+  });
   const quickViews = useMemo(
-    () => buildQuickViews({ rows, draftCount: (draftsQuery.data ?? []).length, scheduleCount: null }),
-    [draftsQuery.data, rows],
+    () =>
+      buildQuickViews({
+        rows,
+        draftCount: (draftsQuery.data ?? []).length,
+        // Until the answer arrives the tile says so rather than showing a zero
+        // it has not checked.
+        scheduleCount: cronQuery.data ? cronQuery.data.filter((job) => job.state === "active").length : null,
+      }),
+    [cronQuery.data, draftsQuery.data, rows],
   );
 
   const listItems = useMemo<ListItem[]>(() => {

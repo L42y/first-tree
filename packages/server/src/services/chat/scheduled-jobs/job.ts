@@ -211,6 +211,30 @@ export async function listCronJobsForChat(db: Database, controlChatId: string): 
   return Promise.all(rows.map((row) => projectCronJob(db, row)));
 }
 
+/**
+ * Every schedule owned by a user, across the orgs they belong to.
+ *
+ * The per-chat listing answers "what runs from here", which leaves a client
+ * that wants "what do I have scheduled" fanning out across every chat it knows
+ * about — one request per chat to find the handful that have any. Ownership is
+ * already the authorisation boundary for mutating a job (`requireCronJobAccess`
+ * checks `ownerMemberId`), so listing by owner adds no new reach: it returns
+ * exactly the jobs that caller may already read and modify one id at a time.
+ *
+ * Ordered by next run so the answer is the one the question implies — what
+ * happens soonest — with unscheduled and paused jobs after, since a job with
+ * no next occurrence cannot be sorted among the ones that have one.
+ */
+export async function listCronJobsForUser(db: Database, userId: string): Promise<CronJob[]> {
+  const rows = await db
+    .select({ job: cronJobs })
+    .from(cronJobs)
+    .innerJoin(members, eq(members.id, cronJobs.ownerMemberId))
+    .where(and(eq(members.userId, userId), eq(members.status, "active")))
+    .orderBy(asc(cronJobs.nextRunAt), asc(cronJobs.createdAt), asc(cronJobs.id));
+  return Promise.all(rows.map((row) => projectCronJob(db, row.job)));
+}
+
 export async function getCronJobRow(db: Database, id: string): Promise<CronJobRow | null> {
   const [row] = await db.select().from(cronJobs).where(eq(cronJobs.id, id)).limit(1);
   return row ?? null;

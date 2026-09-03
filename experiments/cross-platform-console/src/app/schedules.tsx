@@ -1,59 +1,46 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 import { useMemo } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { formatNextRun, scheduleStateLabel } from "~/lib/chat-schedule";
-import { type ChatCronJob, fetchChatRows, listChatCronJobs } from "~/lib/chats-api";
+import { fetchChatRows, listMyCronJobs, type MyCronJob } from "~/lib/chats-api";
 import { orderSchedules } from "~/lib/quick-views";
 import { colors } from "~/lib/theme";
 
 /**
- * Schedules — every cron job run from a chat you are in.
- *
- * The server only lists jobs per chat, so this asks each chat and stitches the
- * answers together. That is the honest cost of the feature today; a
- * `/me/cron-jobs` endpoint would make it one request, and this cap exists so
- * the fan-out stays bounded until then.
+ * Schedules — every cron job you own, in one request. This used to ask each
+ * chat in turn because the server only listed jobs per chat; `/me/cron-jobs`
+ * now answers the question the screen is actually asking.
  */
-const MAX_CHATS_SCANNED = 40;
-
 export default function SchedulesScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
+  const jobsQuery = useQuery({
+    queryKey: ["me", "cron-jobs"],
+    queryFn: ({ signal }) => listMyCronJobs(signal),
+    refetchInterval: 60_000,
+  });
+  // Chat titles come from the conversation list the app already holds, so the
+  // rows can say where a schedule runs without a second lookup per job.
   const rowsQuery = useQuery({
     queryKey: ["me", "chats", "list", "all"],
     queryFn: ({ signal }) => fetchChatRows("all", signal),
   });
-  const chatIds = useMemo(() => (rowsQuery.data ?? []).slice(0, MAX_CHATS_SCANNED), [rowsQuery.data]);
-
-  const jobQueries = useQueries({
-    queries: chatIds.map((row) => ({
-      queryKey: ["chats", row.chatId, "cron-jobs"],
-      queryFn: ({ signal }: { signal: AbortSignal }) => listChatCronJobs(row.chatId, signal),
-      staleTime: 5 * 60_000,
-      retry: false,
-    })),
-  });
 
   const jobs = useMemo(() => {
-    const titles = new Map(chatIds.map((row) => [row.chatId, row.title]));
-    const collected: Array<{ job: ChatCronJob; chatId: string; chatTitle: string }> = [];
-    jobQueries.forEach((query, index) => {
-      const chat = chatIds[index];
-      if (!chat) return;
-      for (const job of query.data ?? []) {
-        collected.push({ job, chatId: chat.chatId, chatTitle: titles.get(chat.chatId) ?? chat.title });
-      }
-    });
-    const ordered = orderSchedules(collected.map((entry) => entry.job));
-    return ordered.map((job) => collected.find((entry) => entry.job.id === job.id)).filter((entry) => entry != null);
-  }, [chatIds, jobQueries]);
+    const titles = new Map((rowsQuery.data ?? []).map((row) => [row.chatId, row.title]));
+    return orderSchedules(jobsQuery.data ?? []).map((job) => ({
+      job,
+      chatId: (job as MyCronJob).controlChatId,
+      chatTitle: titles.get((job as MyCronJob).controlChatId) ?? "",
+    }));
+  }, [jobsQuery.data, rowsQuery.data]);
 
-  const loading = rowsQuery.isLoading || jobQueries.some((query) => query.isLoading);
+  const loading = jobsQuery.isLoading;
 
   return (
     <View style={[styles.screen, { paddingTop: insets.top + 6 }]}>
@@ -66,7 +53,7 @@ export default function SchedulesScreen() {
 
       <ScrollView contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + 24 }]}>
         {loading && <ActivityIndicator color={colors.textMuted} />}
-        {!loading && jobs.length === 0 && <Text style={styles.empty}>No schedules run from your chats.</Text>}
+        {!loading && jobs.length === 0 && <Text style={styles.empty}>Nothing is scheduled.</Text>}
         {jobs.map((entry) => {
           const paused = scheduleStateLabel(entry.job.state);
           return (
@@ -89,7 +76,8 @@ export default function SchedulesScreen() {
                 </Text>
               </View>
               <Text style={styles.rowMeta} numberOfLines={1}>
-                {entry.job.schedule} · {entry.chatTitle}
+                {entry.job.schedule}
+                {entry.chatTitle ? ` · ${entry.chatTitle}` : ""}
               </Text>
             </Pressable>
           );

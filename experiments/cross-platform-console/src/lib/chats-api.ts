@@ -202,3 +202,15 @@ export async function listChatCronJobs(chatId: string, signal?: AbortSignal): Pr
   const res = await api.get<{ items?: ChatCronJob[] }>(`/chats/${encodeURIComponent(chatId)}/cron-jobs`, { signal });
   return res.items ?? [];
 }
+
+export type MyCronJob = ChatCronJob & { controlChatId: string };
+
+/**
+ * Every schedule the caller owns, across chats, ordered by what runs next
+ * (`GET /me/cron-jobs`). Replaces asking each chat in turn — see the route's
+ * comment for why owner-scope is the right boundary.
+ */
+export async function listMyCronJobs(signal?: AbortSignal): Promise<MyCronJob[]> {
+  const res = await api.get<{ items?: MyCronJob[] }>("/me/cron-jobs", { signal });
+  return res.items ?? [];
+}
