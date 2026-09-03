@@ -91,18 +91,14 @@ export default function RootLayout() {
                 <Stack.Screen
                   name="ask/[requestId]"
                   options={{
-                    presentation: "formSheet",
+                    // The sheet draws its own container so it can size to its
+                    // contents. A native form sheet handed it a fixed fraction
+                    // of the screen, and a question that did not fit came out
+                    // stacked on top of itself.
+                    presentation: "transparentModal",
+                    animation: "fade",
                     headerShown: false,
-                    contentStyle: { backgroundColor: colors.bg },
-                    // A question, its recommendation, the options and the
-                    // action row do not fit in half a screen; opening at a
-                    // detent that cannot hold them is what made the sheet look
-                    // broken before it was even scrolled.
-                    sheetAllowedDetents: [0.7, 1],
-                    sheetInitialDetentIndex: 0,
-                    sheetGrabberVisible: true,
-                    sheetCornerRadius: 24,
-                    sheetLargestUndimmedDetentIndex: "none",
+                    contentStyle: { backgroundColor: "transparent" },
                     gestureEnabled: true,
                   }}
                 />

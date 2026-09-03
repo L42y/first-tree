@@ -154,7 +154,7 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
 
   if (openRequestsQuery.isLoading || !parsed) {
     return (
-      <View style={[styles.sheet, styles.loading]}>
+      <View style={[styles.overlay, styles.loading]}>
         {openRequestsQuery.isError ? (
           <Text style={styles.errorText}>Couldn't load this question.</Text>
         ) : (
@@ -180,222 +180,246 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
   };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.sheet}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={0}
-    >
-      <View style={styles.content}>
-        {/* One heading, not three: the kicker says what this is, the question
-            says what it asks. "You need to choose" above the question was a
-            third line of chrome saying neither. */}
-        <View style={styles.header}>
-          <Text style={styles.kicker}>{isClarify ? "Ask about this decision" : "Decision needed"}</Text>
-          <Pressable onPress={() => router.back()} hitSlop={12} style={styles.closeButton}>
-            <Ionicons name="close" size={20} color={colors.textSecondary} />
-          </Pressable>
-        </View>
+    <View style={styles.overlay}>
+      <Pressable style={styles.backdrop} onPress={() => router.back()} accessibilityLabel="Dismiss" />
+      <KeyboardAvoidingView
+        style={styles.sheetWrap}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        keyboardVerticalOffset={0}
+      >
+        <View style={styles.sheet}>
+          <View style={styles.grabber} />
 
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="interactive"
-        >
-          <Text style={styles.questionText}>{presentation.decision || "The agent did not provide a question."}</Text>
-
-          {presentation.recommendation ? (
-            <View style={styles.recommendation}>
-              <Text style={styles.recommendationLabel}>Recommended</Text>
-              <Text style={styles.recommendationText}>{presentation.recommendation}</Text>
+          {/* Everything except the action row lives in one scroller. Splitting
+              the question, the options and the input across fixed siblings is
+              what let them overlap when the sheet was shorter than its
+              contents — one scroller cannot overlap itself. */}
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="interactive"
+          >
+            <View style={styles.header}>
+              <Text style={styles.kicker}>{isClarify ? "Ask about this decision" : "Decision needed"}</Text>
+              <Pressable onPress={() => router.back()} hitSlop={12} style={styles.closeButton}>
+                <Ionicons name="close" size={20} color={colors.textSecondary} />
+              </Pressable>
             </View>
-          ) : null}
 
-          <View style={styles.modeTabs}>
-            <Pressable
-              accessibilityRole="tab"
-              accessibilityState={{ selected: !isClarify }}
-              onPress={() => setMode("answer")}
-              style={({ pressed }) => [styles.modeTab, !isClarify && styles.modeTabActive, pressed && styles.pressed]}
-            >
-              <Text style={[styles.modeTabText, !isClarify && styles.modeTabTextActive]}>Answer</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="tab"
-              accessibilityState={{ selected: isClarify }}
-              onPress={() => setMode("clarify")}
-              style={({ pressed }) => [styles.modeTab, isClarify && styles.modeTabActive, pressed && styles.pressed]}
-            >
-              <Text style={[styles.modeTabText, isClarify && styles.modeTabTextActive]}>Clarification</Text>
-            </Pressable>
-          </View>
+            <Text style={styles.questionText}>{presentation.decision || "The agent did not provide a question."}</Text>
 
-          {!isClarify && options.length > 0 && (
-            <View style={styles.options}>
-              {options.map((option, index) => {
-                const isSelected = selected.includes(index);
-                return (
-                  <Pressable
-                    key={`${option.label}-${option.description ?? ""}`}
-                    accessibilityRole={parsed.request.multiSelect ? "checkbox" : "radio"}
-                    accessibilityState={{ checked: isSelected }}
-                    onPress={() => toggleOption(index)}
-                    style={({ pressed }) => [
-                      styles.option,
-                      isSelected && styles.optionSelected,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <View style={[styles.choiceGlyph, isSelected && styles.choiceGlyphActive]}>
-                      <Ionicons
-                        name={
-                          isSelected ? (parsed.request.multiSelect ? "checkmark" : "checkmark") : "radio-button-off"
-                        }
-                        size={14}
-                        color={isSelected ? colors.accentText : colors.textMuted}
-                      />
-                    </View>
-                    <View style={styles.optionText}>
-                      <Text style={styles.optionLabel}>{option.label}</Text>
-                      {option.description ? <Text style={styles.optionDescription}>{option.description}</Text> : null}
-                    </View>
-                  </Pressable>
-                );
-              })}
+            {presentation.recommendation ? (
+              <View style={styles.recommendation}>
+                <Text style={styles.recommendationLabel}>Recommended</Text>
+                <Text style={styles.recommendationText}>{presentation.recommendation}</Text>
+              </View>
+            ) : null}
+
+            <View style={styles.modeTabs}>
+              <Pressable
+                accessibilityRole="tab"
+                accessibilityState={{ selected: !isClarify }}
+                onPress={() => setMode("answer")}
+                style={({ pressed }) => [styles.modeTab, !isClarify && styles.modeTabActive, pressed && styles.pressed]}
+              >
+                <Text style={[styles.modeTabText, !isClarify && styles.modeTabTextActive]}>Answer</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="tab"
+                accessibilityState={{ selected: isClarify }}
+                onPress={() => setMode("clarify")}
+                style={({ pressed }) => [styles.modeTab, isClarify && styles.modeTabActive, pressed && styles.pressed]}
+              >
+                <Text style={[styles.modeTabText, isClarify && styles.modeTabTextActive]}>Clarification</Text>
+              </Pressable>
             </View>
-          )}
 
-          {!isClarify && options.length > 0 && !noteOpen && (
-            <Pressable
-              onPress={() => setNoteOpen(true)}
-              style={({ pressed }) => [styles.inlineAction, pressed && styles.pressed]}
-            >
-              <Ionicons name="add" size={14} color={colors.accent} />
-              <Text style={styles.inlineActionText}>Add details</Text>
-            </Pressable>
-          )}
-
-          {(isClarify || options.length === 0 || noteOpen) && (
-            <LiveMarkdownInput
-              value={answer}
-              onChangeText={setAnswer}
-              placeholder={
-                isClarify
-                  ? "Ask the agent for clarification…"
-                  : options.length === 0
-                    ? "Type your answer…"
-                    : "Add optional details…"
-              }
-              placeholderTextColor={colors.textMuted}
-              multiline
-              maxLength={4000}
-              returnKeyType={isClarify ? "send" : options.length === 0 ? "send" : "done"}
-              submitBehavior={isClarify || options.length === 0 ? "submit" : undefined}
-              onSubmitEditing={() => {
-                if (isClarify) void askAgent();
-                else if (options.length === 0) void submit();
-              }}
-            />
-          )}
-
-          {(contextText || thread.length > 0) && (
-            <View style={styles.secondary}>
-              {contextText && (
-                <View style={styles.secondaryRow}>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => setShowContext((visible) => !visible)}
-                    style={({ pressed }) => [styles.secondaryAction, pressed && styles.pressed]}
-                  >
-                    <Ionicons name={showContext ? "chevron-up" : "chevron-down"} size={14} color={colors.textMuted} />
-                    <Text style={styles.secondaryActionText}>Background</Text>
-                  </Pressable>
-                  {showContext && (
-                    <View style={styles.context}>
-                      <MarkdownText value={contextText} />
-                    </View>
-                  )}
-                </View>
-              )}
-
-              {thread.length > 0 && (
-                <View style={styles.secondaryRow}>
-                  <Pressable
-                    accessibilityRole="button"
-                    onPress={() => setShowThread((visible) => !visible)}
-                    style={({ pressed }) => [styles.secondaryAction, pressed && styles.pressed]}
-                  >
-                    <Ionicons name={showThread ? "chevron-up" : "chevron-down"} size={14} color={colors.textMuted} />
-                    <Text style={styles.secondaryActionText}>Clarification ({thread.length})</Text>
-                  </Pressable>
-                  {showThread &&
-                    thread.map((entry) => (
-                      <View key={entry.id} style={styles.threadEntry}>
-                        <Text style={styles.threadAuthor}>{entry.senderId === selfAgentId ? "You" : "Agent"}</Text>
-                        <MarkdownText value={typeof entry.content === "string" ? entry.content : ""} />
+            {!isClarify && options.length > 0 && (
+              <View style={styles.options}>
+                {options.map((option, index) => {
+                  const isSelected = selected.includes(index);
+                  return (
+                    <Pressable
+                      key={`${option.label}-${option.description ?? ""}`}
+                      accessibilityRole={parsed.request.multiSelect ? "checkbox" : "radio"}
+                      accessibilityState={{ checked: isSelected }}
+                      onPress={() => toggleOption(index)}
+                      style={({ pressed }) => [
+                        styles.option,
+                        isSelected && styles.optionSelected,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <View style={[styles.choiceGlyph, isSelected && styles.choiceGlyphActive]}>
+                        <Ionicons
+                          name={isSelected ? "checkmark" : "radio-button-off"}
+                          size={14}
+                          color={isSelected ? colors.accentText : colors.textMuted}
+                        />
                       </View>
-                    ))}
-                </View>
-              )}
-            </View>
-          )}
-        </ScrollView>
+                      <View style={styles.optionText}>
+                        <Text style={styles.optionLabel}>{option.label}</Text>
+                        {option.description ? <Text style={styles.optionDescription}>{option.description}</Text> : null}
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            )}
 
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+            {!isClarify && options.length > 0 && !noteOpen && (
+              <Pressable
+                onPress={() => setNoteOpen(true)}
+                style={({ pressed }) => [styles.inlineAction, pressed && styles.pressed]}
+              >
+                <Ionicons name="add" size={14} color={colors.accent} />
+                <Text style={styles.inlineActionText}>Add details</Text>
+              </Pressable>
+            )}
 
-        <View style={styles.footer}>
-          {!isClarify ? (
+            {(isClarify || options.length === 0 || noteOpen) && (
+              <LiveMarkdownInput
+                value={answer}
+                onChangeText={setAnswer}
+                placeholder={
+                  isClarify
+                    ? "Ask the agent for clarification…"
+                    : options.length === 0
+                      ? "Type your answer…"
+                      : "Add optional details…"
+                }
+                placeholderTextColor={colors.textMuted}
+                multiline
+                maxLength={4000}
+                returnKeyType={isClarify ? "send" : options.length === 0 ? "send" : "done"}
+                submitBehavior={isClarify || options.length === 0 ? "submit" : undefined}
+                onSubmitEditing={() => {
+                  if (isClarify) void askAgent();
+                  else if (options.length === 0) void submit();
+                }}
+              />
+            )}
+
+            {(contextText || thread.length > 0) && (
+              <View style={styles.secondary}>
+                {contextText && (
+                  <View style={styles.secondaryRow}>
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => setShowContext((visible) => !visible)}
+                      style={({ pressed }) => [styles.secondaryAction, pressed && styles.pressed]}
+                    >
+                      <Ionicons name={showContext ? "chevron-up" : "chevron-down"} size={14} color={colors.textMuted} />
+                      <Text style={styles.secondaryActionText}>Background</Text>
+                    </Pressable>
+                    {showContext && (
+                      <View style={styles.context}>
+                        <MarkdownText value={contextText} />
+                      </View>
+                    )}
+                  </View>
+                )}
+
+                {thread.length > 0 && (
+                  <View style={styles.secondaryRow}>
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => setShowThread((visible) => !visible)}
+                      style={({ pressed }) => [styles.secondaryAction, pressed && styles.pressed]}
+                    >
+                      <Ionicons name={showThread ? "chevron-up" : "chevron-down"} size={14} color={colors.textMuted} />
+                      <Text style={styles.secondaryActionText}>Clarification ({thread.length})</Text>
+                    </Pressable>
+                    {showThread &&
+                      thread.map((entry) => (
+                        <View key={entry.id} style={styles.threadEntry}>
+                          <Text style={styles.threadAuthor}>{entry.senderId === selfAgentId ? "You" : "Agent"}</Text>
+                          <MarkdownText value={typeof entry.content === "string" ? entry.content : ""} />
+                        </View>
+                      ))}
+                  </View>
+                )}
+              </View>
+            )}
+
+            {error ? <Text style={styles.errorText}>{error}</Text> : null}
+          </ScrollView>
+
+          <View style={styles.footer}>
+            {!isClarify ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => void skip()}
+                disabled={submitting || advancing}
+                style={({ pressed }) => [
+                  styles.skipButton,
+                  (submitting || advancing) && styles.disabled,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.skipText}>Skip</Text>
+              </Pressable>
+            ) : (
+              <View />
+            )}
+
             <Pressable
               accessibilityRole="button"
-              onPress={() => void skip()}
-              disabled={submitting || advancing}
-              style={({ pressed }) => [
-                styles.skipButton,
-                (submitting || advancing) && styles.disabled,
-                pressed && styles.pressed,
-              ]}
+              onPress={() => void (isClarify ? askAgent() : submit())}
+              disabled={!canSubmit}
+              style={({ pressed }) => [styles.primaryButton, !canSubmit && styles.disabled, pressed && styles.pressed]}
             >
-              <Text style={styles.skipText}>Skip</Text>
+              {submitting || advancing ? (
+                <ActivityIndicator color={colors.accentText} size="small" />
+              ) : (
+                <Text style={styles.primaryText}>
+                  {isClarify ? "Send clarification" : options.length > 0 ? "Submit choice" : "Send answer"}
+                </Text>
+              )}
             </Pressable>
-          ) : (
-            <View />
-          )}
-
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => void (isClarify ? askAgent() : submit())}
-            disabled={!canSubmit}
-            style={({ pressed }) => [styles.primaryButton, !canSubmit && styles.disabled, pressed && styles.pressed]}
-          >
-            {submitting || advancing ? (
-              <ActivityIndicator color={colors.accentText} size="small" />
-            ) : (
-              <Text style={styles.primaryText}>
-                {isClarify ? "Send clarification" : options.length > 0 ? "Submit choice" : "Send answer"}
-              </Text>
-            )}
-          </Pressable>
+          </View>
         </View>
-      </View>
-    </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  sheet: {
+  overlay: {
     flex: 1,
-    backgroundColor: colors.bg,
+    justifyContent: "flex-end",
   },
-  content: {
-    flex: 1,
-    // A flex child's default `minHeight: auto` lets it keep its content height
-    // instead of shrinking, which is how a half-height sheet ended up painting
-    // the question over the header and the Skip button over the input.
-    minHeight: 0,
-    gap: 14,
-    paddingHorizontal: 18,
-    paddingTop: 20,
-    paddingBottom: 16,
+  backdrop: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
+  sheetWrap: {
+    justifyContent: "flex-end",
+  },
+  // The sheet sizes itself from its own content up to a ceiling, rather than
+  // being handed a fixed fraction of the screen its contents may not fit in.
+  sheet: {
+    maxHeight: "88%",
+    backgroundColor: colors.bg,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    paddingBottom: 8,
+  },
+  grabber: {
+    alignSelf: "center",
+    marginTop: 8,
+    marginBottom: 4,
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border,
   },
   loading: {
     alignItems: "center",
@@ -424,12 +448,12 @@ const styles = StyleSheet.create({
     width: 34,
   },
   scroll: {
-    flex: 1,
     flexShrink: 1,
-    minHeight: 0,
   },
   scrollContent: {
     gap: 14,
+    paddingHorizontal: 18,
+    paddingTop: 8,
     paddingBottom: 12,
   },
   questionText: {
@@ -587,6 +611,8 @@ const styles = StyleSheet.create({
   },
   footer: {
     flexShrink: 0,
+    paddingHorizontal: 18,
+    paddingTop: 4,
     alignItems: "center",
     flexDirection: "row",
     gap: 10,
