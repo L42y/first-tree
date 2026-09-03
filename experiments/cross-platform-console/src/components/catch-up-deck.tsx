@@ -2,15 +2,26 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import type { Message } from "@first-tree/shared";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
-import { useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useMemo, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Animated,
+  Dimensions,
+  PanResponder,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 
 import { AskThread } from "~/components/ask-thread";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
 import { fetchOpenRequests } from "~/lib/ask";
+import { useAuth } from "~/lib/auth-context";
 import type { CatchUpCard } from "~/lib/catch-up";
 import { flattenNewestFirstMessages } from "~/lib/chat-read-state";
-import { listChatMessages, markMeChatRead } from "~/lib/chats-api";
+import { getChat, listChatMessages, markMeChatRead } from "~/lib/chats-api";
 import { colors } from "~/lib/theme";
 
 /** How much of the conversation a card shows before it asks you to open it. */
@@ -33,7 +44,47 @@ export function CatchUpCardView({
 }) {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { memberId, user } = useAuth();
   const [working, setWorking] = useState(false);
+
+  // Swipe defers, in either direction, and resolves nothing: putting a card
+  // off is the reversible decision, so it is the one a stray flick may make.
+  // Marking read stays a button you have to mean.
+  const slideX = useRef(new Animated.Value(0)).current;
+  const deferCard = useCallback(
+    (direction: number) => {
+      Animated.timing(slideX, {
+        toValue: direction * Dimensions.get("window").width,
+        duration: 180,
+        useNativeDriver: true,
+      }).start(() => {
+        slideX.setValue(0);
+        onDone("kept");
+      });
+    },
+    [onDone, slideX],
+  );
+  const swipe = useMemo(
+    () =>
+      PanResponder.create({
+        // Claim only a clear horizontal drag, so the card's own scrolling and
+        // its buttons keep working.
+        onMoveShouldSetPanResponder: (_event, gesture) =>
+          Math.abs(gesture.dx) > 12 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
+        onPanResponderMove: (_event, gesture) => slideX.setValue(gesture.dx),
+        onPanResponderRelease: (_event, gesture) => {
+          if (Math.abs(gesture.dx) > 110 || Math.abs(gesture.vx) > 0.8) {
+            deferCard(Math.sign(gesture.dx) || 1);
+            return;
+          }
+          Animated.spring(slideX, { toValue: 0, useNativeDriver: true, bounciness: 0 }).start();
+        },
+        onPanResponderTerminate: () => {
+          Animated.spring(slideX, { toValue: 0, useNativeDriver: true, bounciness: 0 }).start();
+        },
+      }),
+    [deferCard, slideX],
+  );
 
   const openChat = () => router.push({ pathname: `/chat/${card.chatId}` } as never);
 
@@ -42,13 +93,36 @@ export function CatchUpCardView({
     queryFn: ({ signal }) => fetchOpenRequests(card.chatId, signal),
     enabled: card.kind === "ask",
   });
+  // A card shows the conversation, so it must name people the way the
+  // conversation does — a truncated uuid is not a sender.
+  const chatQuery = useQuery({
+    queryKey: ["chats", card.chatId],
+    queryFn: () => getChat(card.chatId),
+    enabled: card.kind === "unread",
+  });
+  const participants = useMemo(() => {
+    const byId = new Map<
+      string,
+      { displayName: string; colorToken: string | null; imageUrl: string | null; human: boolean }
+    >();
+    for (const participant of chatQuery.data?.participants ?? []) {
+      byId.set(participant.agentId, {
+        displayName: participant.displayName,
+        colorToken: participant.avatarColorToken,
+        imageUrl: participant.avatarImageUrl,
+        human: participant.type === "human",
+      });
+    }
+    return byId;
+  }, [chatQuery.data]);
+
   const messagesQuery = useQuery({
     queryKey: ["chats", card.chatId, "catch-up-window"],
     queryFn: ({ signal }) => listChatMessages(card.chatId, { limit: CARD_MESSAGE_LIMIT }, signal),
     enabled: card.kind === "unread",
   });
 
-  const ask: Message | null = asksQuery.data?.[0] ?? null;
+  const asks: Message[] = asksQuery.data ?? [];
   const messages = messagesQuery.data ? flattenNewestFirstMessages([messagesQuery.data.items]) : [];
 
   const markRead = async () => {
@@ -63,7 +137,18 @@ export function CatchUpCardView({
   };
 
   return (
-    <View style={styles.card}>
+    <Animated.View
+      style={[
+        styles.card,
+        {
+          transform: [
+            { translateX: slideX },
+            { rotate: slideX.interpolate({ inputRange: [-300, 0, 300], outputRange: ["-4deg", "0deg", "4deg"] }) },
+          ],
+        },
+      ]}
+      {...swipe.panHandlers}
+    >
       <Pressable onPress={openChat} style={({ pressed }) => [styles.cardHead, pressed && styles.pressed]}>
         <Text style={styles.cardTitle} numberOfLines={1}>
           {card.title}
@@ -73,10 +158,25 @@ export function CatchUpCardView({
 
       <ScrollView style={styles.cardBody} contentContainerStyle={styles.cardBodyContent}>
         {card.kind === "ask" ? (
-          ask ? (
-            // Answering is the whole point of the card, so the thread — options,
-            // reply box and all — lives in it. No round trip to the chat.
-            <AskThread chatId={card.chatId} requestId={ask.id} question={ask} onResolved={() => onDone("cleared")} />
+          asks.length > 0 ? (
+            // The card carries the thread itself — the question, everything
+            // already said under it, the options and the reply box — so the
+            // card is answerable rather than a link to somewhere answerable.
+            // A chat can hold more than one open question; the card is done
+            // when its last one is.
+            asks.map((ask) => (
+              <AskThread
+                key={ask.id}
+                chatId={card.chatId}
+                requestId={ask.id}
+                question={ask}
+                onResolved={() => {
+                  void asksQuery.refetch().then((result) => {
+                    if ((result.data ?? []).length === 0) onDone("cleared");
+                  });
+                }}
+              />
+            ))
           ) : (
             <View style={styles.cardLoading}>
               {asksQuery.isLoading ? (
@@ -93,14 +193,28 @@ export function CatchUpCardView({
               <Text style={styles.newText}>New</Text>
               <View style={styles.newLine} />
             </View>
-            {messages.map((message) => (
-              <ChatMessageBubble
-                key={message.id}
-                message={message}
-                isMe={false}
-                senderName={message.senderId.slice(0, 8)}
-              />
-            ))}
+            {messages.map((message) => {
+              const sender = participants.get(message.senderId);
+              return (
+                <ChatMessageBubble
+                  key={message.id}
+                  message={message}
+                  isMe={message.senderId === memberId || message.senderId === user?.id}
+                  senderName={sender?.displayName ?? message.senderId.slice(0, 8)}
+                  avatar={
+                    sender
+                      ? {
+                          name: sender.displayName,
+                          seed: message.senderId,
+                          colorToken: sender.colorToken,
+                          imageUrl: sender.imageUrl,
+                          kind: sender.human ? "human" : "agent",
+                        }
+                      : undefined
+                  }
+                />
+              );
+            })}
           </>
         ) : (
           <View style={styles.cardLoading}>
@@ -137,7 +251,7 @@ export function CatchUpCardView({
           </Pressable>
         )}
       </View>
-    </View>
+    </Animated.View>
   );
 }
 
