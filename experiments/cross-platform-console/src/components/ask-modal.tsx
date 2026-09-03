@@ -12,6 +12,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { LiveMarkdownInput } from "~/components/live-markdown-input";
 import { MarkdownText } from "~/components/markdown-text";
@@ -29,6 +30,7 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
   const router = useRouter();
   const queryClient = useQueryClient();
   const { agentId: selfAgentId } = useAuth();
+  const insets = useSafeAreaInsets();
   // Web parity (`ask-takeover.tsx`): answering and asking the agent are two
   // surfaces, not two tabs. Ask-agent mode replaces the answer surface so the
   // reply box and the question box never compete for the same footer actions.
@@ -230,17 +232,21 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
               {askAgentOpen ? (
                 <>
                   <Text style={styles.surfaceLabel}>What would you like the agent to clarify?</Text>
-                  <LiveMarkdownInput
-                    value={clarification}
-                    onChangeText={setClarification}
-                    placeholder="Ask a focused question about the context above…"
-                    placeholderTextColor={colors.textMuted}
-                    multiline
-                    maxLength={4000}
-                    returnKeyType="send"
-                    submitBehavior="submit"
-                    onSubmitEditing={() => void askAgent()}
-                  />
+                  <View style={styles.field}>
+                    <LiveMarkdownInput
+                      value={clarification}
+                      onChangeText={setClarification}
+                      placeholder="Ask a focused question about the context above…"
+                      placeholderTextColor={colors.textMuted}
+                      multiline
+                      minLines={3}
+                      maxLines={5}
+                      maxLength={4000}
+                      returnKeyType="send"
+                      submitBehavior="submit"
+                      onSubmitEditing={() => void askAgent()}
+                    />
+                  </View>
                 </>
               ) : (
                 <>
@@ -290,19 +296,25 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
                   {/* Always present, never behind a disclosure: with options it
                       is the "something else" answer, without them it is the
                       answer. */}
-                  <LiveMarkdownInput
-                    value={answer}
-                    onChangeText={setAnswer}
-                    placeholder={options.length > 0 ? "Other (type your own)…" : "Type your answer…"}
-                    placeholderTextColor={colors.textMuted}
-                    multiline
-                    maxLength={4000}
-                    returnKeyType={options.length === 0 ? "send" : "done"}
-                    submitBehavior={options.length === 0 ? "submit" : undefined}
-                    onSubmitEditing={() => {
-                      if (options.length === 0) void submit();
-                    }}
-                  />
+                  <View style={styles.field}>
+                    <LiveMarkdownInput
+                      value={answer}
+                      onChangeText={setAnswer}
+                      placeholder={options.length > 0 ? "Other (type your own)…" : "Type your answer…"}
+                      placeholderTextColor={colors.textMuted}
+                      multiline
+                      // Web parity: a bare "Other" line beside options, a real
+                      // writing surface when the answer is only text.
+                      minLines={options.length > 0 ? 1 : 3}
+                      maxLines={options.length > 0 ? 4 : 6}
+                      maxLength={4000}
+                      returnKeyType={options.length === 0 ? "send" : "done"}
+                      submitBehavior={options.length === 0 ? "submit" : undefined}
+                      onSubmitEditing={() => {
+                        if (options.length === 0) void submit();
+                      }}
+                    />
+                  </View>
                 </>
               )}
 
@@ -311,7 +323,7 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
           </ScrollView>
 
           {/* Pinned actions — Skip / Ask agent / Submit, like the web footer. */}
-          <View style={styles.footer}>
+          <View style={[styles.footer, { paddingBottom: 12 + insets.bottom }]}>
             {askAgentOpen ? (
               <>
                 <Pressable
@@ -388,6 +400,13 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "flex-end",
   },
+  field: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    borderRadius: 14,
+    backgroundColor: colors.surface,
+    overflow: "hidden",
+  },
   backdrop: {
     position: "absolute",
     top: 0,
@@ -396,18 +415,24 @@ const styles = StyleSheet.create({
     left: 0,
     backgroundColor: "rgba(0,0,0,0.55)",
   },
+  // `maxHeight: "90%"` only means anything against a parent with a definite
+  // height. Without this the sheet grew past the screen and its scroller never
+  // shrank, which is how the answer field ended up under the action row.
   sheetWrap: {
+    flex: 1,
     justifyContent: "flex-end",
   },
   // The sheet grows with its contents up to a ceiling instead of being handed
   // a fixed fraction of the screen its contents may not fit in.
   sheet: {
-    maxHeight: "90%",
+    maxHeight: "92%",
     backgroundColor: colors.bg,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
+    // Nothing inside may paint over the action row.
+    overflow: "hidden",
   },
   loading: {
     alignItems: "center",
@@ -549,56 +574,54 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 18,
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
+    backgroundColor: colors.bg,
   },
   footerSpacer: {
     flex: 1,
   },
+  // One filled action, one quiet one, and a plain text out. Three filled
+  // slabs competing at the same weight was the "ugly" part.
   ghostButton: {
     alignItems: "center",
     justifyContent: "center",
-    minHeight: 44,
-    paddingHorizontal: 14,
-    borderRadius: 12,
+    height: 40,
+    paddingHorizontal: 10,
   },
   ghostText: {
-    color: colors.textSecondary,
+    color: colors.textMuted,
     fontSize: 15,
-    fontWeight: "600",
+    fontWeight: "500",
   },
   secondaryButton: {
     alignItems: "center",
     justifyContent: "center",
-    minHeight: 44,
+    height: 40,
     paddingHorizontal: 16,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
+    borderRadius: 20,
     backgroundColor: colors.surface,
   },
   secondaryText: {
     color: colors.text,
     fontSize: 15,
-    fontWeight: "600",
+    fontWeight: "500",
   },
   primaryButton: {
     alignItems: "center",
     justifyContent: "center",
-    minHeight: 44,
-    minWidth: 116,
-    paddingHorizontal: 18,
-    borderRadius: 12,
+    height: 40,
+    paddingHorizontal: 20,
+    borderRadius: 20,
     backgroundColor: colors.accent,
   },
   primaryText: {
     color: colors.accentText,
     fontSize: 15,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   disabled: {
     opacity: 0.45,
