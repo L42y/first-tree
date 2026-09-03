@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   FlatList,
   Keyboard,
+  type LayoutChangeEvent,
   Platform,
   Pressable,
   ScrollView,
@@ -137,6 +138,9 @@ export function ChatDetailContent({
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [composerFooterHeight, setComposerFooterHeight] = useState(0);
+  // The header floats over the timeline, so the list needs its height as
+  // clearance rather than the header taking a row out of the conversation.
+  const [headerHeight, setHeaderHeight] = useState(0);
   // Deterministic keyboard avoidance: lift the composer by the exact
   // keyboard height. Framework avoidance (KeyboardAvoidingView /
   // automaticallyAdjustKeyboardInsets) mis-measured or left the composer
@@ -434,6 +438,7 @@ export function ChatDetailContent({
   const composerReserve = openAsk ? 0 : composerFooterHeight + keyboardHeight;
   const ComposerSurface = liquidGlass?.GlassView;
   const PickerSurface = ComposerSurface ?? View;
+  const HeaderSurface = ComposerSurface ?? View;
 
   // Speaker-only chat roster. Routing uses immutable canonical names; the
   // display label is only for the picker row.
@@ -721,51 +726,62 @@ export function ChatDetailContent({
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        {showBack && (
-          <Pressable onPress={() => router.back()} style={styles.backButton}>
-            <Text style={styles.backText}>Back</Text>
-          </Pressable>
-        )}
-        <Pressable
-          style={styles.headerIdentity}
-          onPress={() => setParticipantsOpen(true)}
-          onLongPress={() => setDetailsOpen(true)}
-          disabled={participantRoster.length === 0}
-          accessibilityRole="button"
-          accessibilityLabel="Show participants"
-        >
-          <Avatar
-            name={headerPeer?.displayName ?? chat?.title ?? chatId}
-            seed={headerPeer?.agentId ?? chatId}
-            colorToken={headerPeer?.avatarColorToken ?? null}
-            imageUrl={headerPeer?.avatarImageUrl ?? null}
-            kind={headerPeer?.type === "human" ? "human" : "agent"}
-            size={32}
-          />
-          <View style={styles.headerText}>
-            <Text style={styles.headerTitle} numberOfLines={1}>
-              {chat?.title ?? chatId.slice(0, 8)}
-            </Text>
-            {participantRoster.length > 0 && (
-              <Text style={styles.headerSubtitle} numberOfLines={1}>
-                {summarizeParticipants(participantRoster)}
+      <HeaderSurface
+        style={[styles.header, ComposerSurface ? styles.headerGlass : styles.headerOpaque]}
+        {...(ComposerSurface ? { glassEffectStyle: "regular" as const, colorScheme: "dark" as const } : {})}
+        onLayout={({ nativeEvent: { layout } }: LayoutChangeEvent) => setHeaderHeight(layout.height)}
+      >
+        <View style={[styles.headerBar, { paddingTop: safeAreaInsets.top + 6 }]}>
+          {showBack && (
+            <Pressable
+              onPress={() => router.back()}
+              hitSlop={8}
+              accessibilityLabel="Back"
+              style={({ pressed }) => [styles.circleButton, pressed && styles.circleButtonPressed]}
+            >
+              <Ionicons name="chevron-back" size={20} color={colors.text} />
+            </Pressable>
+          )}
+          <Pressable
+            style={styles.headerIdentity}
+            onPress={() => setParticipantsOpen(true)}
+            onLongPress={() => setDetailsOpen(true)}
+            disabled={participantRoster.length === 0}
+            accessibilityRole="button"
+            accessibilityLabel="Show participants"
+          >
+            <Avatar
+              name={headerPeer?.displayName ?? chat?.title ?? chatId}
+              seed={headerPeer?.agentId ?? chatId}
+              colorToken={headerPeer?.avatarColorToken ?? null}
+              imageUrl={headerPeer?.avatarImageUrl ?? null}
+              kind={headerPeer?.type === "human" ? "human" : "agent"}
+              size={32}
+            />
+            <View style={styles.headerText}>
+              <Text style={styles.headerTitle} numberOfLines={1}>
+                {chat?.title ?? chatId.slice(0, 8)}
               </Text>
-            )}
-          </View>
-        </Pressable>
-        <Pressable
-          onPress={() => setDetailsOpen(true)}
-          hitSlop={8}
-          accessibilityLabel="Chat details"
-          style={styles.headerButton}
-        >
-          <Ionicons name="ellipsis-horizontal" size={20} color={colors.textSecondary} />
-          {/* A Summary written since the last visit is the one thing worth
-              advertising from behind the menu. */}
-          {chatSummary?.isUnread && <View style={styles.headerDot} />}
-        </Pressable>
-      </View>
+              {participantRoster.length > 0 && (
+                <Text style={styles.headerSubtitle} numberOfLines={1}>
+                  {summarizeParticipants(participantRoster)}
+                </Text>
+              )}
+            </View>
+          </Pressable>
+          <Pressable
+            onPress={() => setDetailsOpen(true)}
+            hitSlop={8}
+            accessibilityLabel="Chat details"
+            style={({ pressed }) => [styles.circleButton, pressed && styles.circleButtonPressed]}
+          >
+            <Ionicons name="ellipsis-horizontal" size={20} color={colors.text} />
+            {/* A Summary written since the last visit is the one thing worth
+                advertising from behind the menu. */}
+            {chatSummary?.isUnread && <View style={styles.headerDot} />}
+          </Pressable>
+        </View>
+      </HeaderSurface>
 
       <ChatDetailsSheet
         visible={detailsOpen}
@@ -806,7 +822,7 @@ export function ChatDetailContent({
       )}
 
       {error && !isLoading && (
-        <View style={styles.errorBox}>
+        <View style={[styles.errorBox, { marginTop: headerHeight }]}>
           <Text style={styles.errorText}>{error instanceof Error ? error.message : "Failed to load chat"}</Text>
           <Pressable onPress={() => void chatQuery.refetch()} style={styles.retryButton}>
             <Text style={styles.retryText}>Retry</Text>
@@ -866,7 +882,9 @@ export function ChatDetailContent({
         // The list is flipped, so the composer's clearance is a spacer at the
         // head of the data rather than contentContainer padding.
         ListHeaderComponent={<View style={{ height: Math.max(8, composerReserve + 12) }} />}
-        contentContainerStyle={styles.messages}
+        // Inverted: the container's bottom padding lands at the visual top,
+        // which is where the floating header needs its clearance.
+        contentContainerStyle={[styles.messages, { paddingBottom: headerHeight + 8 }]}
         scrollEventThrottle={16}
         onScroll={({ nativeEvent: { contentOffset } }) => {
           scrollOffsetRef.current = contentOffset.y;
@@ -1070,33 +1088,44 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   header: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 12,
-    paddingTop: 48,
-    paddingBottom: 12,
-    gap: 8,
+    position: "absolute",
+    top: 0,
+    right: 0,
+    left: 0,
+    zIndex: 5,
+  },
+  headerGlass: {
+    // The material is the background; a color on top would flatten it.
+    backgroundColor: "transparent",
+  },
+  headerOpaque: {
+    backgroundColor: colors.bg,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
   },
-  backButton: {
+  headerBar: {
+    flexDirection: "row",
+    alignItems: "center",
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: colors.surface,
+    paddingBottom: 10,
+    gap: 8,
   },
-  backText: {
-    fontSize: 14,
-    color: colors.text,
+  circleButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surfaceStrong,
+  },
+  circleButtonPressed: {
+    backgroundColor: colors.surface,
   },
   headerIdentity: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-  },
-  headerButton: {
-    padding: 4,
   },
   headerDot: {
     position: "absolute",
