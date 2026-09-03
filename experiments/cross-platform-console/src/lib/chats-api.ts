@@ -162,3 +162,43 @@ export async function setChatEngagement(chatId: string, status: "active" | "arch
 export async function addChatParticipants(chatId: string, agentIds: string[]): Promise<void> {
   await api.post(`/chats/${encodeURIComponent(chatId)}/participants`, { participantIds: agentIds });
 }
+
+export type ChatLinkedEntity = {
+  entityType: string;
+  entityKey: string;
+  htmlUrl: string;
+  title: string | null;
+  state: string | null;
+  number: number | null;
+};
+
+/** GitHub entities followed into this chat (PRs, issues, …). */
+export async function listChatGithubEntities(chatId: string, signal?: AbortSignal): Promise<ChatLinkedEntity[]> {
+  const res = await api.get<{ items?: ChatLinkedEntity[] }>(`/chats/${encodeURIComponent(chatId)}/github-entities`, {
+    signal,
+  });
+  return res.items ?? [];
+}
+
+/** GitLab merge requests / issues followed into this chat. */
+export async function listChatGitlabEntities(chatId: string, signal?: AbortSignal): Promise<ChatLinkedEntity[]> {
+  const res = await api.get<{ items?: ChatLinkedEntity[] }>(`/chats/${encodeURIComponent(chatId)}/gitlab-entities`, {
+    signal,
+  });
+  return res.items ?? [];
+}
+
+export type ChatCronJob = {
+  id: string;
+  name: string;
+  schedule: string;
+  timezone: string;
+  state: string;
+  nextRunAt: string | null;
+};
+
+/** Scheduled jobs whose control chat is this one. */
+export async function listChatCronJobs(chatId: string, signal?: AbortSignal): Promise<ChatCronJob[]> {
+  const res = await api.get<{ items?: ChatCronJob[] }>(`/chats/${encodeURIComponent(chatId)}/cron-jobs`, { signal });
+  return res.items ?? [];
+}

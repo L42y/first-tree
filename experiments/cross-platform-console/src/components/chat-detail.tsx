@@ -21,9 +21,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AddParticipantConfirm } from "~/components/add-participant-confirm";
 import { AgentMetaLine } from "~/components/agent-meta";
 import { Avatar } from "~/components/avatar";
+import { ChatDetailsSheet } from "~/components/chat-details-sheet";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
 import { ChatParticipantsSheet } from "~/components/chat-participants";
-import { ChatSummaryCard } from "~/components/chat-summary-card";
 import { LiveMarkdownInput, type LiveMarkdownInputHandle } from "~/components/live-markdown-input";
 import { MessageCard } from "~/components/message-card";
 import { RenameChatModal } from "~/components/rename-chat-modal";
@@ -380,6 +380,7 @@ export function ChatDetailContent({
   );
   const [participantsOpen, setParticipantsOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   // The agent-authored current-state brief on `chat.description`.
   const chatSummary = useMemo(() => (chat ? buildChatSummary(chat) : null), [chat]);
 
@@ -729,6 +730,7 @@ export function ChatDetailContent({
         <Pressable
           style={styles.headerIdentity}
           onPress={() => setParticipantsOpen(true)}
+          onLongPress={() => setDetailsOpen(true)}
           disabled={participantRoster.length === 0}
           accessibilityRole="button"
           accessibilityLabel="Show participants"
@@ -753,16 +755,29 @@ export function ChatDetailContent({
           </View>
         </Pressable>
         <Pressable
-          onPress={() => setRenameOpen(true)}
+          onPress={() => setDetailsOpen(true)}
           hitSlop={8}
-          accessibilityLabel="Rename chat"
+          accessibilityLabel="Chat details"
           style={styles.headerButton}
         >
-          <Ionicons name="create-outline" size={20} color={colors.textSecondary} />
+          <Ionicons name="ellipsis-horizontal" size={20} color={colors.textSecondary} />
+          {/* A Summary written since the last visit is the one thing worth
+              advertising from behind the menu. */}
+          {chatSummary?.isUnread && <View style={styles.headerDot} />}
         </Pressable>
       </View>
 
-      <ChatSummaryCard summary={chatSummary} chatId={chatId} />
+      <ChatDetailsSheet
+        visible={detailsOpen}
+        chatId={chatId}
+        title={chat?.title ?? chatId.slice(0, 8)}
+        summary={chatSummary}
+        onRename={() => {
+          setDetailsOpen(false);
+          setRenameOpen(true);
+        }}
+        onClose={() => setDetailsOpen(false)}
+      />
 
       <RenameChatModal
         visible={renameOpen}
@@ -1082,6 +1097,15 @@ const styles = StyleSheet.create({
   },
   headerButton: {
     padding: 4,
+  },
+  headerDot: {
+    position: "absolute",
+    top: 2,
+    right: 2,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: colors.accent,
   },
   headerText: {
     flex: 1,
