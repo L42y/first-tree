@@ -1,11 +1,22 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Keyboard, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Animated,
+  Keyboard,
+  PanResponder,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { LiveMarkdownInput } from "~/components/live-markdown-input";
+import { ComposerField } from "~/components/composer-field";
 import { MarkdownText } from "~/components/markdown-text";
 import {
   askAgentForClarification,
@@ -22,6 +33,32 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
   const queryClient = useQueryClient();
   const { agentId: selfAgentId } = useAuth();
   const insets = useSafeAreaInsets();
+  // Pull the sheet down to dismiss, the same gesture the participants sheet
+  // uses: the grabber area claims a clear downward drag, and the body only
+  // dismisses through overscroll once it has no scrolling left to do.
+  const dragY = useRef(new Animated.Value(0)).current;
+  const settle = useCallback(() => {
+    Animated.spring(dragY, { toValue: 0, useNativeDriver: true, bounciness: 0 }).start();
+  }, [dragY]);
+  const dismiss = useCallback(() => {
+    Animated.timing(dragY, { toValue: 700, duration: 160, useNativeDriver: true }).start(() => router.back());
+  }, [dragY, router]);
+  const headerDrag = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_event, gesture) => gesture.dy > 4 && gesture.dy > Math.abs(gesture.dx),
+        onPanResponderMove: (_event, gesture) => {
+          if (gesture.dy > 0) dragY.setValue(gesture.dy);
+        },
+        onPanResponderRelease: (_event, gesture) => {
+          if (gesture.dy > 90 || gesture.vy > 0.8) dismiss();
+          else settle();
+        },
+        onPanResponderTerminate: settle,
+      }),
+    [dismiss, dragY, settle],
+  );
+
   // Same deterministic keyboard handling the composer uses: lift by the exact
   // keyboard height. KeyboardAvoidingView mis-measures inside a native modal
   // and left the action row behind the keyboard.
@@ -187,200 +224,187 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
     });
   };
 
-  // A phone is not a desktop with a centred card: a blocking decision with a
-  // long body, its options and a free-text answer IS the screen. Full height
-  // with a fixed bar top and bottom also gives the scroller a definite height
-  // to live in — a self-sizing sheet does not, which is why its contents kept
-  // ending up under the actions.
+  // Shaped like the participants sheet, because that is the shape that works
+  // here: a bottom sheet capped against a full-height parent, everything in
+  // one scroller, and the actions sitting in the flow right under the input
+  // rather than pinned to the bottom edge fighting the keyboard.
   return (
-    <View style={[styles.screen, { paddingBottom: keyboardHeight }]}>
-      <View style={[styles.topBar, { paddingTop: insets.top + 6 }]}>
-        <Text style={styles.kicker}>Question for you</Text>
-        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.headerLink}>
-          <Text style={styles.headerLinkText}>Show chat</Text>
-        </Pressable>
-      </View>
-
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="interactive"
-      >
-        {/* The ask, whole, as the agent wrote it. */}
-        <MarkdownText value={rawContent || "The agent did not provide a question."} />
-
-        {thread.length > 0 && (
-          <View style={styles.threadBlock}>
-            {thread.map((entry) => (
-              <View key={entry.id} style={styles.threadEntry}>
-                <Text style={styles.threadAuthor}>
-                  {entry.senderId === selfAgentId ? "You asked the agent" : "Agent response"}
-                </Text>
-                <MarkdownText value={typeof entry.content === "string" ? entry.content : ""} />
-              </View>
-            ))}
+    <View style={[styles.overlay, { paddingBottom: keyboardHeight }]}>
+      <Pressable style={styles.backdrop} onPress={() => router.back()} accessibilityLabel="Show the chat" />
+      <Animated.View style={[styles.sheet, { transform: [{ translateY: dragY }] }]}>
+        <View {...headerDrag.panHandlers}>
+          <View style={styles.grabber} />
+          <View style={styles.topBar}>
+            <Text style={styles.kicker}>Question for you</Text>
+            <Pressable onPress={() => router.back()} hitSlop={12} style={styles.headerLink}>
+              <Text style={styles.headerLinkText}>Show chat</Text>
+            </Pressable>
           </View>
-        )}
+        </View>
 
-        <View style={styles.answerSurface}>
-          {askAgentOpen ? (
-            <>
-              <Text style={styles.surfaceLabel}>What would you like the agent to clarify?</Text>
-              <View style={styles.field}>
-                <LiveMarkdownInput
-                  value={clarification}
-                  onChangeText={setClarification}
-                  placeholder="Ask a focused question about the context above…"
-                  placeholderTextColor={colors.textMuted}
-                  multiline
-                  minLines={3}
-                  maxLines={5}
-                  maxLength={4000}
-                  returnKeyType="send"
-                  submitBehavior="submit"
-                  onSubmitEditing={() => void askAgent()}
-                />
-              </View>
-            </>
-          ) : (
-            <>
-              {options.length > 0 && (
-                <View style={styles.options}>
-                  {options.map((option, index) => {
-                    const isSelected = selected.includes(index);
-                    return (
-                      <Pressable
-                        key={`${option.label}-${option.description ?? ""}`}
-                        accessibilityRole={multi ? "checkbox" : "radio"}
-                        accessibilityState={{ checked: isSelected }}
-                        onPress={() => toggleOption(index)}
-                        style={({ pressed }) => [
-                          styles.option,
-                          isSelected && styles.optionSelected,
-                          pressed && styles.pressed,
-                        ]}
-                      >
-                        <View
-                          style={[
-                            styles.choiceGlyph,
-                            multi && styles.choiceGlyphSquare,
-                            isSelected && styles.choiceGlyphActive,
-                          ]}
-                        >
-                          {isSelected && <Ionicons name="checkmark" size={13} color={colors.accentText} />}
-                        </View>
-                        <View style={styles.optionText}>
-                          <Text style={styles.optionLabel}>{option.label}</Text>
-                          {option.description ? (
-                            <Text style={styles.optionDescription}>{option.description}</Text>
-                          ) : null}
-                          {/* Web parity: the preview is the option's
-                                  evidence, and only earns its space once that
-                                  option is the one being chosen. */}
-                          {isSelected && option.preview ? (
-                            <Text style={styles.optionPreview}>{option.preview}</Text>
-                          ) : null}
-                        </View>
-                      </Pressable>
-                    );
-                  })}
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 20 }]}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
+          scrollEventThrottle={16}
+          onScroll={({ nativeEvent }) => dragY.setValue(Math.max(0, -nativeEvent.contentOffset.y))}
+          onScrollEndDrag={({ nativeEvent }) => {
+            if (nativeEvent.contentOffset.y < -80) dismiss();
+            else settle();
+          }}
+        >
+          {/* The ask, whole, as the agent wrote it. */}
+          <MarkdownText value={rawContent || "The agent did not provide a question."} />
+
+          {thread.length > 0 && (
+            <View style={styles.threadBlock}>
+              {thread.map((entry) => (
+                <View key={entry.id} style={styles.threadEntry}>
+                  <Text style={styles.threadAuthor}>
+                    {entry.senderId === selfAgentId ? "You asked the agent" : "Agent response"}
+                  </Text>
+                  <MarkdownText value={typeof entry.content === "string" ? entry.content : ""} />
                 </View>
-              )}
-
-              {/* Always present, never behind a disclosure: with options it
-                      is the "something else" answer, without them it is the
-                      answer. */}
-              <View style={styles.field}>
-                <LiveMarkdownInput
-                  value={answer}
-                  onChangeText={setAnswer}
-                  placeholder={options.length > 0 ? "Other (type your own)…" : "Type your answer…"}
-                  placeholderTextColor={colors.textMuted}
-                  multiline
-                  // Web parity: a bare "Other" line beside options, a real
-                  // writing surface when the answer is only text.
-                  minLines={options.length > 0 ? 1 : 3}
-                  maxLines={options.length > 0 ? 4 : 6}
-                  maxLength={4000}
-                  returnKeyType={options.length === 0 ? "send" : "done"}
-                  submitBehavior={options.length === 0 ? "submit" : undefined}
-                  onSubmitEditing={() => {
-                    if (options.length === 0) void submit();
-                  }}
-                />
-              </View>
-            </>
+              ))}
+            </View>
           )}
 
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
-        </View>
-      </ScrollView>
+          {!askAgentOpen && options.length > 0 && (
+            <View style={styles.options}>
+              {options.map((option, index) => {
+                const isSelected = selected.includes(index);
+                return (
+                  <Pressable
+                    key={`${option.label}-${option.description ?? ""}`}
+                    accessibilityRole={multi ? "checkbox" : "radio"}
+                    accessibilityState={{ checked: isSelected }}
+                    onPress={() => toggleOption(index)}
+                    style={({ pressed }) => [
+                      styles.option,
+                      isSelected && styles.optionSelected,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.choiceGlyph,
+                        multi && styles.choiceGlyphSquare,
+                        isSelected && styles.choiceGlyphActive,
+                      ]}
+                    >
+                      {isSelected && <Ionicons name="checkmark" size={13} color={colors.accentText} />}
+                    </View>
+                    <View style={styles.optionText}>
+                      <Text style={styles.optionLabel}>{option.label}</Text>
+                      {option.description ? <Text style={styles.optionDescription}>{option.description}</Text> : null}
+                      {isSelected && option.preview ? <Text style={styles.optionPreview}>{option.preview}</Text> : null}
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
 
-      {/* Sticky action bar. Outside the scroller, so it is reachable no matter
-          how long the ask is. */}
-      <View style={[styles.footer, { paddingBottom: keyboardHeight > 0 ? 12 : insets.bottom + 12 }]}>
-        {askAgentOpen ? (
-          <>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => setAskAgentOpen(false)}
-              disabled={busy}
-              style={({ pressed }) => [styles.ghostButton, busy && styles.disabled, pressed && styles.pressed]}
-            >
-              <Text style={styles.ghostText}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => void askAgent()}
-              disabled={!canAskAgent}
-              style={({ pressed }) => [
-                styles.primaryButton,
-                !canAskAgent && styles.disabled,
-                pressed && styles.pressed,
-              ]}
-            >
-              {submitting ? (
-                <ActivityIndicator color={colors.accentText} size="small" />
-              ) : (
-                <Text style={styles.primaryText}>Ask agent</Text>
-              )}
-            </Pressable>
-          </>
-        ) : (
-          <>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => void skip()}
-              disabled={busy}
-              style={({ pressed }) => [styles.ghostButton, busy && styles.disabled, pressed && styles.pressed]}
-            >
-              <Text style={styles.ghostText}>Skip</Text>
-            </Pressable>
-            <View style={styles.footerSpacer} />
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => setAskAgentOpen(true)}
-              disabled={busy}
-              style={({ pressed }) => [styles.secondaryButton, busy && styles.disabled, pressed && styles.pressed]}
-            >
-              <Text style={styles.secondaryText}>Ask agent</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => void submit()}
-              disabled={!canSubmit}
-              style={({ pressed }) => [styles.primaryButton, !canSubmit && styles.disabled, pressed && styles.pressed]}
-            >
-              {busy ? (
-                <ActivityIndicator color={colors.accentText} size="small" />
-              ) : (
-                <Text style={styles.primaryText}>{options.length > 0 ? "Submit" : "Send answer"}</Text>
-              )}
-            </Pressable>
-          </>
-        )}
-      </View>
+          {askAgentOpen && <Text style={styles.surfaceLabel}>What would you like the agent to clarify?</Text>}
+
+          {/* The chat's own composer, not a second input that behaves
+              differently. */}
+          <ComposerField
+            value={askAgentOpen ? clarification : answer}
+            onChangeText={askAgentOpen ? setClarification : setAnswer}
+            placeholder={
+              askAgentOpen
+                ? "Ask a focused question…"
+                : options.length > 0
+                  ? "Other (type your own)…"
+                  : "Type your answer…"
+            }
+            multiline
+            minLines={askAgentOpen || options.length === 0 ? 3 : 1}
+            maxLines={5}
+            maxLength={4000}
+            returnKeyType={askAgentOpen || options.length === 0 ? "send" : "done"}
+            submitBehavior={askAgentOpen || options.length === 0 ? "submit" : undefined}
+            onSubmitEditing={() => {
+              if (askAgentOpen) void askAgent();
+              else if (options.length === 0) void submit();
+            }}
+          />
+
+          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
+          {/* Actions live in the flow, under the answer they act on. Pinned to
+              the bottom edge they either fight the keyboard or sit half a
+              screen away from the thing being answered. */}
+          <View style={styles.actions}>
+            {askAgentOpen ? (
+              <>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setAskAgentOpen(false)}
+                  disabled={busy}
+                  style={({ pressed }) => [styles.ghostButton, busy && styles.disabled, pressed && styles.pressed]}
+                >
+                  <Text style={styles.ghostText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => void askAgent()}
+                  disabled={!canAskAgent}
+                  style={({ pressed }) => [
+                    styles.primaryButton,
+                    !canAskAgent && styles.disabled,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  {submitting ? (
+                    <ActivityIndicator color={colors.accentText} size="small" />
+                  ) : (
+                    <Text style={styles.primaryText}>Ask agent</Text>
+                  )}
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => void skip()}
+                  disabled={busy}
+                  style={({ pressed }) => [styles.ghostButton, busy && styles.disabled, pressed && styles.pressed]}
+                >
+                  <Text style={styles.ghostText}>Skip</Text>
+                </Pressable>
+                <View style={styles.actionSpacer} />
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => setAskAgentOpen(true)}
+                  disabled={busy}
+                  style={({ pressed }) => [styles.secondaryButton, busy && styles.disabled, pressed && styles.pressed]}
+                >
+                  <Text style={styles.secondaryText}>Ask agent</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => void submit()}
+                  disabled={!canSubmit}
+                  style={({ pressed }) => [
+                    styles.primaryButton,
+                    !canSubmit && styles.disabled,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  {busy ? (
+                    <ActivityIndicator color={colors.accentText} size="small" />
+                  ) : (
+                    <Text style={styles.primaryText}>{options.length > 0 ? "Submit" : "Send answer"}</Text>
+                  )}
+                </Pressable>
+              </>
+            )}
+          </View>
+        </ScrollView>
+      </Animated.View>
     </View>
   );
 }
@@ -389,9 +413,37 @@ const styles = StyleSheet.create({
   // Full screen, three bands: fixed bar, one scroller, fixed action bar. The
   // scroller is the only flexible band, and it is bounded by the screen — the
   // guarantee a self-sizing sheet could never give it.
-  screen: {
+  // Same shell as the participants sheet: a full-height overlay gives the
+  // sheet's percentage cap something definite to resolve against, and the
+  // sheet grows with its contents until it hits that cap.
+  overlay: {
     flex: 1,
+    justifyContent: "flex-end",
+  },
+  backdrop: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
+  sheet: {
+    maxHeight: "88%",
     backgroundColor: colors.bg,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    overflow: "hidden",
+  },
+  grabber: {
+    alignSelf: "center",
+    marginTop: 8,
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border,
   },
   topBar: {
     flexDirection: "row",
@@ -399,16 +451,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 12,
     paddingHorizontal: 16,
+    paddingTop: 10,
     paddingBottom: 10,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  field: {
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    borderRadius: 14,
-    backgroundColor: colors.surface,
-    overflow: "hidden",
   },
   // `maxHeight: "90%"` only means anything against a parent with a definite
   // height. Without this the sheet grew past the screen and its scroller never
@@ -422,7 +466,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   scroll: {
-    flex: 1,
+    flexShrink: 1,
   },
   scrollContent: {
     gap: 14,
@@ -466,12 +510,6 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.5,
     textTransform: "uppercase",
-  },
-  answerSurface: {
-    gap: 10,
-    paddingTop: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
   },
   surfaceLabel: {
     color: colors.textSecondary,
@@ -538,18 +576,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
   },
-  footer: {
-    flexShrink: 0,
+  actions: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
-    backgroundColor: colors.bg,
+    paddingTop: 4,
   },
-  footerSpacer: {
+  actionSpacer: {
     flex: 1,
   },
   // One filled action, one quiet one, and a plain text out. Three filled

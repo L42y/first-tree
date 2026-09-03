@@ -25,7 +25,8 @@ import { Avatar } from "~/components/avatar";
 import { ChatDetailsSheet } from "~/components/chat-details-sheet";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
 import { ChatParticipantsSheet } from "~/components/chat-participants";
-import { LiveMarkdownInput, type LiveMarkdownInputHandle } from "~/components/live-markdown-input";
+import { ComposerField } from "~/components/composer-field";
+import type { LiveMarkdownInputHandle } from "~/components/live-markdown-input";
 import { MessageCard } from "~/components/message-card";
 import { RenameChatModal } from "~/components/rename-chat-modal";
 import { ASK_MODAL_ROUTE, fetchOpenRequests, parseAskRequest } from "~/lib/ask";
@@ -997,64 +998,29 @@ export function ChatDetailContent({
               )}
             </PickerSurface>
           )}
-          {ComposerSurface ? (
-            <ComposerSurface
-              style={styles.glassComposerCard}
-              glassEffectStyle="regular"
-              colorScheme="dark"
-              isInteractive
-            >
-              {showTokenUsage && processedTokens > 0 && (
+          {/* The one writing surface, shared with the ask screen. */}
+          <ComposerField
+            ref={composerRef}
+            header={
+              showTokenUsage && processedTokens > 0 ? (
                 <Text style={styles.tokenUsage}>{formatTokenCount(processedTokens)} processed tokens in this chat</Text>
-              )}
-              <View style={styles.composer}>
-                <LiveMarkdownInput
-                  ref={composerRef}
-                  style={styles.glassInputContainer}
-                  value={message}
-                  onChangeText={setMessage}
-                  onSelectionChange={({ nativeEvent: { selection } }) => setCaret(selection.start)}
-                  onFocus={handleComposerFocus}
-                  placeholder={inputPlaceholder}
-                  multiline
-                  maxLength={4000}
-                  returnKeyType="send"
-                  submitBehavior="submit"
-                  onSubmitEditing={() => {
-                    const first = visibleMentionCandidates[0];
-                    if (activeMentionTrigger && first) applyMentionPick(first);
-                    else void handleSend();
-                  }}
-                />
-              </View>
-            </ComposerSurface>
-          ) : (
-            <View style={styles.composerCard}>
-              {showTokenUsage && processedTokens > 0 && (
-                <Text style={styles.tokenUsage}>{formatTokenCount(processedTokens)} processed tokens in this chat</Text>
-              )}
-              <View style={styles.composer}>
-                <LiveMarkdownInput
-                  ref={composerRef}
-                  style={styles.inputContainer}
-                  value={message}
-                  onChangeText={setMessage}
-                  onSelectionChange={({ nativeEvent: { selection } }) => setCaret(selection.start)}
-                  onFocus={handleComposerFocus}
-                  placeholder={inputPlaceholder}
-                  multiline
-                  maxLength={4000}
-                  returnKeyType="send"
-                  submitBehavior="submit"
-                  onSubmitEditing={() => {
-                    const first = visibleMentionCandidates[0];
-                    if (activeMentionTrigger && first) applyMentionPick(first);
-                    else void handleSend();
-                  }}
-                />
-              </View>
-            </View>
-          )}
+              ) : null
+            }
+            value={message}
+            onChangeText={setMessage}
+            onSelectionChange={({ nativeEvent: { selection } }) => setCaret(selection.start)}
+            onFocus={handleComposerFocus}
+            placeholder={inputPlaceholder}
+            multiline
+            maxLength={4000}
+            returnKeyType="send"
+            submitBehavior="submit"
+            onSubmitEditing={() => {
+              const first = visibleMentionCandidates[0];
+              if (activeMentionTrigger && first) applyMentionPick(first);
+              else void handleSend();
+            }}
+          />
         </View>
       )}
 
@@ -1254,37 +1220,6 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 12,
   },
-  composerCard: {
-    overflow: "hidden",
-    borderRadius: 24,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    backgroundColor: colors.bg,
-    paddingTop: 4,
-    paddingBottom: 4,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 8 },
-    elevation: 6,
-  },
-  glassComposerCard: {
-    overflow: "hidden",
-    borderRadius: 24,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-    backgroundColor: "transparent",
-    paddingTop: 4,
-    paddingBottom: 4,
-  },
-  composer: {
-    flexDirection: "row",
-    alignItems: "flex-end",
-    paddingHorizontal: 8,
-    paddingTop: 8,
-    paddingBottom: 6,
-    gap: 8,
-  },
   tokenUsage: {
     paddingHorizontal: 16,
     paddingTop: 8,
@@ -1368,15 +1303,5 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 12,
     flexShrink: 1,
-  },
-  inputContainer: {
-    flex: 1,
-    borderRadius: 20,
-    backgroundColor: colors.surface,
-  },
-  glassInputContainer: {
-    flex: 1,
-    borderRadius: 20,
-    backgroundColor: "transparent",
   },
 });

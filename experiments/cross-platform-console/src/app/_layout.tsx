@@ -91,13 +91,13 @@ export default function RootLayout() {
                 <Stack.Screen
                   name="ask/[requestId]"
                   options={{
-                    // A blocking question with a long body, options and a
-                    // free-text answer is a screen on a phone, not a card
-                    // floating over one. Full height also gives the answer
-                    // surface somewhere to go when the keyboard is up.
-                    presentation: "modal",
+                    // The sheet draws its own container, so the route only has
+                    // to be a transparent full-height surface for it to cap
+                    // itself against.
+                    presentation: "transparentModal",
+                    animation: "fade",
                     headerShown: false,
-                    contentStyle: { backgroundColor: colors.bg },
+                    contentStyle: { backgroundColor: "transparent" },
                     gestureEnabled: true,
                   }}
                 />
