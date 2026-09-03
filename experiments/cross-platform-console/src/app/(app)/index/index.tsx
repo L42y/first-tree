@@ -1,6 +1,6 @@
 import Ionicons from "@expo/vector-icons/Ionicons";
 import type { MeChatRow } from "@first-tree/shared";
-import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -22,8 +22,11 @@ import { ChatListItem } from "~/components/chat-list-item";
 import { ChatListSkeleton } from "~/components/chat-list-item-skeleton";
 import { CollapsingHeaderBar, LargeTitle, useCollapsingHeaderScroll } from "~/components/collapsing-header";
 import { QuickActionsButton } from "~/components/quick-actions";
+import { QuickViews } from "~/components/quick-views";
 import { useAuth } from "~/lib/auth-context";
 import { fetchChatRowsPage, renameChat, setChatEngagement } from "~/lib/chats-api";
+import { loadDrafts } from "~/lib/drafts";
+import { buildQuickViews } from "~/lib/quick-views";
 import { getItem, setItem } from "~/lib/storage";
 import { useTabBarFloatingInset } from "~/lib/tab-bar-inset";
 import { colors } from "~/lib/theme";
@@ -154,6 +157,14 @@ export default function ChatListScreen() {
     );
   }, [rows, search]);
 
+  const draftsQuery = useQuery({ queryKey: ["drafts"], queryFn: () => loadDrafts(), refetchOnMount: "always" });
+  // Schedules are only listable per chat today, so the tile leaves its count
+  // unstated rather than claiming a zero it has not checked.
+  const quickViews = useMemo(
+    () => buildQuickViews({ rows, draftCount: (draftsQuery.data ?? []).length, scheduleCount: null }),
+    [draftsQuery.data, rows],
+  );
+
   const listItems = useMemo<ListItem[]>(() => {
     const needsYou = visibleRows.filter((r) => r.openRequestCount > 0);
     const needsYouIds = new Set(needsYou.map((r) => r.chatId));
@@ -243,6 +254,8 @@ export default function ChatListScreen() {
   const listHeader = (
     <View>
       <LargeTitle scrollY={scrollY}>Chats</LargeTitle>
+      {/* The standing piles, above the conversations they are drawn from. */}
+      <QuickViews views={quickViews} />
       {(rows.length > 0 || search.length > 0) && (
         <TextInput
           style={styles.search}
@@ -327,11 +340,7 @@ export default function ChatListScreen() {
               accessibilityLabel={filter === "unread" ? "Showing unread chats, tap to show all" : "Filter unread chats"}
               accessibilityState={{ selected: filter === "unread" }}
             >
-              <Ionicons
-                name={filter === "unread" ? "funnel" : "funnel-outline"}
-                size={20}
-                color={colors.accent}
-              />
+              <Ionicons name={filter === "unread" ? "funnel" : "funnel-outline"} size={20} color={colors.accent} />
             </Pressable>
             <QuickActionsButton />
           </View>

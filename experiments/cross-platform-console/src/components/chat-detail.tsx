@@ -53,6 +53,7 @@ import {
   renameChat,
   sendChatMessage,
 } from "~/lib/chats-api";
+import { clearDraft, loadDrafts, saveDraft } from "~/lib/drafts";
 import { loadLiquidGlass } from "~/lib/liquid-glass";
 import {
   buildMentionCandidates,
@@ -379,6 +380,29 @@ export function ChatDetailContent({
 
   const chat = chatQuery.data;
 
+  // Unsent text survives leaving the chat, on this device only. Restored once
+  // per visit, then written behind a short debounce so typing is not a write
+  // per keystroke.
+  const draftLoadedRef = useRef(false);
+  useEffect(() => {
+    draftLoadedRef.current = false;
+    void loadDrafts().then((drafts) => {
+      if (draftLoadedRef.current) return;
+      draftLoadedRef.current = true;
+      const stored = drafts.find((draft) => draft.chatId === chatId);
+      if (stored) setMessage((current) => (current.length > 0 ? current : stored.text));
+    });
+  }, [chatId]);
+  useEffect(() => {
+    if (!draftLoadedRef.current) return;
+    const timer = setTimeout(() => {
+      void saveDraft(chatId, chat?.title ?? "", message).then(() =>
+        queryClient.invalidateQueries({ queryKey: ["drafts"] }),
+      );
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [chat?.title, chatId, message, queryClient]);
+
   // Roster ordered by who spoke last: the header names the currently active
   // people first, and the sheet spells the same order out with activity times.
   const participantRoster = useMemo(
@@ -641,6 +665,7 @@ export function ChatDetailContent({
     );
     setMessage("");
     setCaret(0);
+    void clearDraft(chatId).then(() => queryClient.invalidateQueries({ queryKey: ["drafts"] }));
     setSending(true);
     setSendError(null);
     // Sending re-attaches the view to the newest message even if the reader

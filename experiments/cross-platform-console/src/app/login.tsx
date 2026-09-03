@@ -1,12 +1,12 @@
-import type { AuthProviderAvailability } from "~/lib/auth-api";
-import { DEFAULT_PROVIDER_AVAILABILITY, fetchBootstrapConfig } from "~/lib/auth-api";
-import type { OAuthCompletion, SignInProvider } from "~/lib/oauth";
-import { CALLBACK_ERROR_COPY } from "~/lib/oauth";
-import { OAuthSheet } from "~/components/oauth-sheet";
-import { useAuth } from "~/lib/auth-context";
-import { colors } from "~/lib/theme";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { OAuthSheet } from "~/components/oauth-sheet";
+import type { AuthProviderAvailability } from "~/lib/auth-api";
+import { DEFAULT_PROVIDER_AVAILABILITY, fetchBootstrapConfig } from "~/lib/auth-api";
+import { useAuth } from "~/lib/auth-context";
+import type { OAuthCompletion, SignInProvider } from "~/lib/oauth";
+import { CALLBACK_ERROR_COPY } from "~/lib/oauth";
+import { colors } from "~/lib/theme";
 
 /**
  * Sign-in entry. First Tree deployments authenticate exclusively through
@@ -44,8 +44,7 @@ export default function LoginScreen() {
   }, []);
 
   const availableProviders = useMemo(
-    () =>
-      (["google", "github", "oidc"] as SignInProvider[]).filter((p) => providers[p]),
+    () => (["google", "github", "oidc"] as SignInProvider[]).filter((p) => providers[p]),
     [providers],
   );
 

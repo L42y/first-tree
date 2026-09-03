@@ -79,6 +79,19 @@ export default function RootLayout() {
                     fullScreenGestureEnabled: true,
                   }}
                 />
+                {/* Quick views: each standing pile gets its own screen. */}
+                {["drafts", "schedules", "forge"].map((name) => (
+                  <Stack.Screen
+                    key={name}
+                    name={name}
+                    options={{
+                      headerShown: false,
+                      contentStyle: { backgroundColor: colors.bg },
+                      gestureEnabled: true,
+                      fullScreenGestureEnabled: true,
+                    }}
+                  />
+                ))}
                 <Stack.Screen
                   name="repos"
                   options={{
