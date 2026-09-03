@@ -109,6 +109,9 @@ export function ChatDetailContent({
   const askModalRequestRef = useRef<string | null>(null);
   const composerRef = useRef<LiveMarkdownInputHandle>(null);
   const focusPrimedRef = useRef(false);
+  // One-shot: the visit's opening position is chosen once, never re-applied
+  // when later messages arrive.
+  const openedAtUnreadRef = useRef(false);
   const autoPrimedDraftRef = useRef(false);
   const readLoadedRef = useRef(false);
   const bottomVisibleRef = useRef<string | null>(null);
@@ -300,8 +303,28 @@ export function ChatDetailContent({
   // The list renders inverted, so it consumes the same rows newest-first.
   const invertedTimeline = useMemo<TimelineItem[]>(() => [...timeline].reverse(), [timeline]);
 
+  // Open on the unread boundary, not blindly on the newest message: the
+  // ribbon lands at the top of the screen with the unread messages below it,
+  // so the reader starts where they stopped. Inverted coordinates keep this
+  // cheap — the rows between the tip and the ribbon are exactly the unread
+  // ones, so nothing has to measure the whole history to get there (which is
+  // what made the old oldest-first anchor land at a random offset). With
+  // nothing unread the natural offset 0 already is the newest message.
+  useEffect(() => {
+    if (openedAtUnreadRef.current || !readReady || invertedTimeline.length === 0) return;
+    openedAtUnreadRef.current = true;
+    const dividerIndex = invertedTimeline.findIndex((row) => row.kind === "divider");
+    if (dividerIndex < 0) return;
+    // A clamped scroll (everything unread already fits on screen) simply
+    // leaves the list at the tip, which is the right answer there.
+    requestAnimationFrame(() => {
+      listRef.current?.scrollToIndex({ index: dividerIndex, viewPosition: 1, animated: false });
+    });
+  }, [invertedTimeline, readReady]);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: chatId changes when the route switches chats.
   useEffect(() => {
+    openedAtUnreadRef.current = false;
     focusPrimedRef.current = false;
     autoPrimedDraftRef.current = false;
   }, [chatId]);
@@ -758,6 +781,14 @@ export function ChatDetailContent({
         }}
         onViewableItemsChanged={handleViewableItemsChanged}
         viewabilityConfig={VIEWABILITY_CONFIG}
+        onScrollToIndexFailed={({ index }) => {
+          // Bubble heights are dynamic, so the first estimate for a row that
+          // has not been laid out yet can miss. Retry once the rows below it
+          // have measured, then give up rather than chasing the reader.
+          setTimeout(() => {
+            listRef.current?.scrollToIndex({ index, viewPosition: 1, animated: false });
+          }, 60);
+        }}
       />
 
       {openAsk && (
