@@ -47,6 +47,44 @@ pnpm ios
 pnpm android
 ```
 
+## Mac Catalyst
+
+Mac Catalyst is generated from the iOS project by the `withMacCatalyst` Expo
+config plugin. On macOS with Xcode and CocoaPods installed, regenerate the
+native project and install its pods:
+
+```bash
+pnpm exec expo prebuild --platform ios --clean
+pod install --project-directory=ios
+```
+
+Build the Catalyst app directly from the command line:
+
+```bash
+xcodebuild \
+  -workspace ios/FirstTree.xcworkspace \
+  -scheme FirstTree \
+  -configuration Debug \
+  -destination 'platform=macOS,variant=Mac Catalyst' \
+  build
+```
+
+To create a distributable archive, use `Release` and a generic Catalyst
+destination:
+
+```bash
+xcodebuild archive \
+  -workspace ios/FirstTree.xcworkspace \
+  -scheme FirstTree \
+  -configuration Release \
+  -destination 'generic/platform=macOS,variant=Mac Catalyst' \
+  -archivePath build/FirstTree-MacCatalyst.xcarchive
+```
+
+The generated Xcode project enables Mac Catalyst, applies React Native's
+Catalyst CocoaPods patches, uses the iOS bundle identifier for the universal
+purchase model, and adds the macOS App Sandbox with outgoing network access.
+
 ## Shared-code strategy
 
 The scaffold starts self-contained. As the experiment matures, extract only the pieces the app needs from the existing web console:

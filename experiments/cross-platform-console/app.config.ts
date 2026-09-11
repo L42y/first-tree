@@ -43,7 +43,7 @@ const config = {
     output: "static",
     favicon: "./assets/favicon.png",
   },
-  plugins: ["expo-router"],
+  plugins: ["expo-router", "./plugins/withMacCatalyst"],
   experiments: {
     typedRoutes: true,
   },
