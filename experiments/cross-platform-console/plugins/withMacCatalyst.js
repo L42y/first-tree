@@ -1,11 +1,26 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { IOSConfig, withDangerousMod, withPodfile, withXcodeProject } = require("expo/config-plugins");
+const {
+  IOSConfig,
+  withDangerousMod,
+  withPodfile,
+  withPodfileProperties,
+  withXcodeProject,
+} = require("expo/config-plugins");
 
 const CATALYST_ENTITLEMENTS_SUFFIX = "-MacCatalyst.entitlements";
 
 function withMacCatalyst(config) {
+  // Expo's prebuilt XCFrameworks don't include Mac Catalyst slices; build from source.
+  config = withPodfileProperties(config, (cfg) => {
+    cfg.modResults["EXPO_USE_PRECOMPILED_MODULES"] = "false";
+    // Build React Native core from source so the React XCFramework module map
+    // doesn't exist, preventing <react/renderer/...> includes from being
+    // intercepted by the framework module resolver on Mac Catalyst.
+    cfg.modResults["ios.buildReactNativeFromSource"] = "true";
+    return cfg;
+  });
   config = withDangerousMod(config, ["ios", createCatalystEntitlements]);
   config = withPodfile(config, enableMacCatalystPods);
   return withXcodeProject(config, enableMacCatalystTarget);
@@ -26,20 +41,41 @@ function createCatalystEntitlements(config) {
 }
 
 function enableMacCatalystPods(config) {
-  const podfile = config.modResults.contents;
+  let podfile = config.modResults.contents;
+
+  // 1. Enable :mac_catalyst_enabled in react_native_post_install.
   const catalystOption = /:mac_catalyst_enabled\s*=>\s*(?:true|false)/;
-
   if (catalystOption.test(podfile)) {
-    config.modResults.contents = podfile.replace(catalystOption, ":mac_catalyst_enabled => true");
-    return config;
+    podfile = podfile.replace(catalystOption, ":mac_catalyst_enabled => true");
+  } else {
+    const postInstallCall = /(react_native_post_install\(\s*installer,\s*config\[:reactNativePath\],)/;
+    if (!postInstallCall.test(podfile)) {
+      throw new Error("Could not find react_native_post_install in the generated Podfile.");
+    }
+    podfile = podfile.replace(postInstallCall, "$1\n        :mac_catalyst_enabled => true,");
   }
 
-  const postInstallCall = /(react_native_post_install\(\s*installer,\s*config\[:reactNativePath\],)/;
-  if (!postInstallCall.test(podfile)) {
-    throw new Error("Could not find react_native_post_install in the generated Podfile.");
+  // 2. Exclude x86_64 from every pod target for Mac Catalyst builds.
+  //    react-native-enriched-markdown has a C++11 narrowing error on x86_64-macabi.
+  //    Also add hermes-engine/destroot/include to React-RuntimeHermes HEADER_SEARCH_PATHS;
+  //    when building RN from source, the hermes headers aren't on the default xcconfig path.
+  if (!podfile.includes("EXCLUDED_ARCHS[sdk=macosx*]")) {
+    const ARCHS_SNIPPET = `
+    installer.pods_project.targets.each do |pod_target|
+      pod_target.build_configurations.each do |cfg|
+        cfg.build_settings["EXCLUDED_ARCHS[sdk=macosx*]"] = "x86_64"
+        if pod_target.name == "React-RuntimeHermes"
+          existing = cfg.build_settings["HEADER_SEARCH_PATHS"] || "$(inherited)"
+          paths = existing.is_a?(Array) ? existing.join(" ") : existing
+          hermes_path = '"$\{PODS_ROOT}/hermes-engine/destroot/include"'
+          cfg.build_settings["HEADER_SEARCH_PATHS"] = paths + " " + hermes_path unless paths.include?("destroot/include")
+        end
+      end
+    end`;
+    podfile = podfile.replace(/(\n  end\nend\s*)$/, `${ARCHS_SNIPPET}\n  end\nend\n`);
   }
 
-  config.modResults.contents = podfile.replace(postInstallCall, "$1\n        :mac_catalyst_enabled => true,");
+  config.modResults.contents = podfile;
   return config;
 }
 
@@ -58,6 +94,9 @@ function enableMacCatalystTarget(config) {
     buildConfiguration.buildSettings.SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = "NO";
     buildConfiguration.buildSettings.DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = "NO";
     buildConfiguration.buildSettings['"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]"'] = entitlementsPath;
+    // Restrict Mac Catalyst to arm64; react-native-enriched-markdown has a
+    // C++11 narrowing error on x86_64-macabi.
+    buildConfiguration.buildSettings['"EXCLUDED_ARCHS[sdk=macosx*]"'] = "x86_64";
   }
 
   IOSConfig.XcodeUtils.addFileToGroupAndLink({
