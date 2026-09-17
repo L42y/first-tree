@@ -101,7 +101,10 @@ describe("Antigravity stream-json parser", () => {
       { kind: "result", isError: true, text: "", sessionId: "c", usage: null },
       { kind: "error", message: "authentication required" },
     ]);
-    expect(parseAntigravityStreamLine("not-json")).toMatchObject([{ kind: "unknown" }]);
+    expect(parseAntigravityStreamLine("not-json")).toMatchObject([{ kind: "noise" }]);
+    expect(
+      parseAntigravityStreamLine('14:50 0:00 /bin/bash -O extglob -c snap=$(command cat <&3); builtin eval -- "$snap"'),
+    ).toMatchObject([{ kind: "noise" }]);
     expect(parseAntigravityStreamLine(JSON.stringify({ event: "future_event" }))).toMatchObject([{ kind: "unknown" }]);
   });
 });

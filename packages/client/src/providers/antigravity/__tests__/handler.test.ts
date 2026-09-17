@@ -675,12 +675,10 @@ process.stdin.on("end", () => {
   });
 
   it.each([
-    ["suspend", true],
-    ["shutdown", true],
-    ["suspend", false],
-    ["shutdown", false],
-  ] as const)("preserves the exact conversation and handles a mutating first turn on %s with settleProviderEntered=%s", async (lifecycle, shouldSettleProviderEntered) => {
-    const root = mkdtempSync(join(tmpdir(), `ft-antigravity-lifecycle-${lifecycle}-`));
+    "suspend",
+    "shutdown",
+  ] as const)("operator %s with settleProviderEntered consumes a mutating turn without a terminal provider-failure notice", async (lifecycle) => {
+    const root = mkdtempSync(join(tmpdir(), `ft-antigravity-lifecycle-settle-${lifecycle}-`));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const inputs: string[] = [];
@@ -717,9 +715,11 @@ process.stdin.on("end", () => {
     await vi.waitFor(() =>
       expect(events.some((event) => (event as { kind?: string }).kind === "tool_call")).toBe(true),
     );
-    const lifecycleOptions = shouldSettleProviderEntered ? { settleProviderEntered: true } : undefined;
-    if (lifecycle === "suspend") await handler.suspend("test lifecycle suspend", lifecycleOptions);
-    else await handler.shutdown("test lifecycle shutdown", lifecycleOptions);
+    if (lifecycle === "suspend") {
+      await handler.suspend("operator_suspended", { settleProviderEntered: true });
+    } else {
+      await handler.shutdown("runtime switched by server", { settleProviderEntered: true });
+    }
 
     const started = await startPromise;
     expect(started.sessionId).toBe("conversation-lifecycle");
@@ -729,6 +729,8 @@ process.stdin.on("end", () => {
       expect.anything(),
       expect.objectContaining({ status: "error", completion: "consumed", reason: "unsafe_replay" }),
     );
+    expect(providerRetryEventNames(events)).toEqual([]);
+    expect(JSON.stringify(events)).not.toContain("Antigravity turn cancelled during a lifecycle transition");
 
     const recoveryToken = deliveryToken();
     const recoveryMessage = message("m-lifecycle", "mutate this");
@@ -748,6 +750,135 @@ process.stdin.on("end", () => {
       expect.objectContaining({ status: "error", completion: "consumed", reason: "unsafe_replay" }),
     );
     expect(events.filter((event) => (event as { kind?: string }).kind === "tool_call")).toHaveLength(1);
+    await handler.shutdown();
+  });
+
+  it.each([
+    "suspend",
+    "shutdown",
+  ] as const)("plain %s without settleProviderEntered keeps a mutating turn recoverable", async (lifecycle) => {
+    const root = mkdtempSync(join(tmpdir(), `ft-antigravity-lifecycle-recover-${lifecycle}-`));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const mutatingOutput = [
+      JSON.stringify({ event: "init", conversation_id: "conversation-lifecycle" }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          conversation_id: "conversation-lifecycle",
+          state: "ACTIVE",
+          step_type: "tool",
+          tool_name: "run_command",
+          tool_call_id: "call-lifecycle",
+          tool_info: { parameters: { command: "touch side-effect-marker" } },
+        },
+      }),
+    ];
+    const recoveredOutput = [
+      JSON.stringify({ event: "init", conversation_id: "conversation-lifecycle" }),
+      JSON.stringify({
+        event: "result",
+        result: {
+          conversation_id: "conversation-lifecycle",
+          status: "SUCCESS",
+          response: "recovered",
+        },
+      }),
+    ];
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(
+        specs,
+        inputs,
+        mutatingOutput,
+        [mutatingOutput, recoveredOutput],
+        [false, true],
+      ),
+      antigravityTurnTimeoutMs: 5_000,
+    });
+    const token = deliveryToken();
+    const startPromise = handler.start(message("m-lifecycle", "mutate this"), sessionCtx, token);
+
+    await vi.waitFor(() => expect(specs).toHaveLength(1), { timeout: 3_000 });
+    await vi.waitFor(() =>
+      expect(events.some((event) => (event as { kind?: string }).kind === "tool_call")).toBe(true),
+    );
+    if (lifecycle === "suspend") await handler.suspend("concurrency_preempted");
+    else await handler.shutdown("session_evicted");
+
+    const started = await startPromise;
+    expect(started.sessionId).toBe("conversation-lifecycle");
+    expect(token.complete).not.toHaveBeenCalled();
+    expect(token.retry).toHaveBeenCalledWith(
+      expect.anything(),
+      lifecycle === "suspend" ? "concurrency_preempted" : "session_evicted",
+    );
+    expect(providerRetryEventNames(events)).toEqual([]);
+
+    if (lifecycle === "shutdown") {
+      await handler.shutdown();
+      return;
+    }
+
+    const recoveryToken = deliveryToken();
+    const resumed = await handler.resume(
+      message("m-lifecycle", "mutate this"),
+      started.sessionId,
+      sessionCtx,
+      recoveryToken,
+    );
+    await vi.waitFor(() => expect(recoveryToken.complete).toHaveBeenCalledTimes(1), { timeout: 3_000 });
+    expect(resumed.sessionId).toBe("conversation-lifecycle");
+    expect(specs).toHaveLength(2);
+    expect(specs[1]?.args).toEqual(expect.arrayContaining(["--conversation", "conversation-lifecycle"]));
+    expect(recoveryToken.retry).not.toHaveBeenCalled();
+    expect(recoveryToken.complete).toHaveBeenCalledWith(expect.anything(), { status: "success" });
+    expect(forwarded).toEqual(["recovered"]);
+    await handler.shutdown();
+  });
+
+  it("ignores stray non-JSON stdout when the documented stream-json result is intact", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-stream-noise-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const output = [
+      JSON.stringify({ event: "init", conversation_id: "conversation-noise" }),
+      '14:50 0:00 /bin/bash -O extglob -c snap=$(command cat <&3); builtin shopt -s extglob; builtin eval -- "$snap"',
+      JSON.stringify({
+        event: "result",
+        result: { conversation_id: "conversation-noise", status: "SUCCESS", response: "done" },
+      }),
+    ];
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(specs, inputs, output, [], [true]),
+      antigravityTurnTimeoutMs: 5_000,
+    });
+    const token = deliveryToken();
+
+    await handler.start(message("m-noise", "please respond"), sessionCtx, token);
+
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(expect.anything(), { status: "success" });
+    expect(forwarded).toEqual(["done"]);
+    expect(providerRetryEventNames(events)).toEqual([]);
+    expect(sessionCtx.log).toHaveBeenCalledWith(expect.stringContaining("ignored non-JSON stdout"));
     await handler.shutdown();
   });
 

@@ -1,8 +1,9 @@
 /**
  * Tolerant parser for the documented Antigravity CLI `stream-json` protocol.
- * Protocol-required identity and terminal-result checks are intentionally left
- * to the handler so a CLI update fails closed instead of being mistaken for a
- * successful turn.
+ * Non-JSON stdout is noise (agy may leak TUI/progress lines). Unknown JSON
+ * event types stay diagnostics. Protocol-required identity and terminal-result
+ * checks are intentionally left to the handler so a CLI update fails closed
+ * instead of being mistaken for a successful turn.
  */
 
 export type AntigravityUsage = {
@@ -31,7 +32,8 @@ export type AntigravityStreamEvent =
       usage: AntigravityUsage | null;
     }
   | { kind: "error"; message: string }
-  | { kind: "unknown"; note: string; raw: string };
+  | { kind: "unknown"; note: string; raw: string }
+  | { kind: "noise"; raw: string };
 
 const PREVIEW_LIMIT = 400;
 
@@ -89,7 +91,9 @@ export function parseAntigravityStreamLine(line: string): AntigravityStreamEvent
   try {
     value = JSON.parse(raw);
   } catch {
-    return [unknown("unparsable stream line", raw)];
+    // agy can mix terminal/TUI progress onto stdout alongside stream-json.
+    // Keep those lines as noise so a valid init+result is not poisoned.
+    return [{ kind: "noise", raw: raw.slice(0, PREVIEW_LIMIT) }];
   }
   const row = record(value);
   if (!row) return [unknown("non-object stream line", raw)];
