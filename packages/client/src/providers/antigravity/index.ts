@@ -914,14 +914,16 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
           protocolErrors.push(`expected one terminal result event, observed ${state.results.length}`);
         }
         if (state.errors.length > 0) protocolErrors.push(...state.errors);
-        if (state.protocolDiagnostics.length > 0) {
+        if (state.protocolDiagnostics.length > 0 && state.results.length !== 1) {
           protocolErrors.push(
             `unsupported or malformed Antigravity stream (${state.protocolDiagnostics.length} line${
               state.protocolDiagnostics.length === 1 ? "" : "s"
             })`,
           );
         }
-        if (state.results[0]?.isError) protocolErrors.push("Antigravity returned an ERROR result");
+        if (state.results[0]?.isError && state.errors.length === 0) {
+          protocolErrors.push("Antigravity returned an ERROR result");
+        }
 
         const success = !outcome.spawnError && outcome.exitCode === 0 && protocolErrors.length === 0;
         if (success) {

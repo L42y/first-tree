@@ -106,5 +106,10 @@ describe("Antigravity stream-json parser", () => {
       parseAntigravityStreamLine('14:50 0:00 /bin/bash -O extglob -c snap=$(command cat <&3); builtin eval -- "$snap"'),
     ).toMatchObject([{ kind: "noise" }]);
     expect(parseAntigravityStreamLine(JSON.stringify({ event: "future_event" }))).toMatchObject([{ kind: "unknown" }]);
+    expect(
+      parseAntigravityStreamLine(
+        JSON.stringify({ event: "error", message: "Individual quota reached. Resets in 2h42m27s." }),
+      ),
+    ).toEqual([{ kind: "error", message: "Individual quota reached. Resets in 2h42m27s." }]);
   });
 });

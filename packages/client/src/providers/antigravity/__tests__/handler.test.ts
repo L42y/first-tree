@@ -884,6 +884,64 @@ process.stdin.on("end", () => {
     await handler.shutdown();
   });
 
+  it("classifies an Individual quota ERROR result as capacity, not malformed-stream configuration", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-quota-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const quotaMessage =
+      "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h42m27s.";
+    const output = [
+      JSON.stringify({ event: "init", conversation_id: "conversation-quota" }),
+      JSON.stringify({ event: "future_event", note: "noise-1" }),
+      JSON.stringify({ event: "future_event", note: "noise-2" }),
+      JSON.stringify({
+        event: "result",
+        result: {
+          conversation_id: "conversation-quota",
+          status: "ERROR",
+          error: quotaMessage,
+        },
+      }),
+    ];
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(specs, inputs, output, [], [true]),
+      antigravityTurnTimeoutMs: 5_000,
+    });
+    const token = deliveryToken();
+
+    await handler.start(message("m-quota", "please respond"), sessionCtx, token);
+
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: "error", completion: "consumed" }),
+    );
+    const retryEvents = events.flatMap((event) => {
+      const { kind, payload } = event as { kind?: unknown; payload?: { message?: unknown } };
+      if (kind !== "error" || typeof payload?.message !== "string") return [];
+      const parsed = parseProviderRetryEventMessage(payload.message);
+      return parsed ? [parsed] : [];
+    });
+    expect(retryEvents).toEqual([
+      expect.objectContaining({
+        event: "provider_failure_terminal",
+        category: "provider_capacity",
+      }),
+    ]);
+    expect(JSON.stringify(events)).toContain("Individual quota reached");
+    expect(JSON.stringify(events)).not.toContain("malformed Antigravity stream");
+    await handler.shutdown();
+  });
+
   it("routes a pre-provider timeout through retry settlement", async () => {
     const root = mkdtempSync(join(tmpdir(), "ft-antigravity-pre-provider-timeout-"));
     roots.push(root);

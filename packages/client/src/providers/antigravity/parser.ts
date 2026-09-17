@@ -103,6 +103,12 @@ export function parseAntigravityStreamLine(line: string): AntigravityStreamEvent
     return [{ kind: "init", sessionId: string(row.conversation_id) }];
   }
 
+  if (eventName === "error") {
+    const message =
+      string(row.message) ?? string(row.error) ?? string(record(row.error)?.message) ?? "Antigravity stream error";
+    return [{ kind: "error", message }];
+  }
+
   if (eventName === "step_update") {
     const step = record(row.step_update);
     if (!step) return [unknown("step_update event missing step_update payload", raw)];
@@ -151,7 +157,8 @@ export function parseAntigravityStreamLine(line: string): AntigravityStreamEvent
     const status = string(result.status);
     const isError = status !== "SUCCESS";
     const text = string(result.response) ?? "";
-    const error = string(result.error);
+    const error =
+      string(result.error) ?? string(record(result.error)?.message) ?? (isError ? string(result.message) : null);
     const events: AntigravityStreamEvent[] = [
       {
         kind: "result",

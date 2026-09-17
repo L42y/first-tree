@@ -381,6 +381,34 @@ describe("classifyProviderFailure", () => {
     });
     expect(protocol).toMatchObject({ category: "configuration", reasonCode: "antigravity_protocol_error" });
 
+    const quota = classifyProviderFailure(
+      new Error(
+        [
+          "unsupported or malformed Antigravity stream (9 lines)",
+          "Antigravity returned an ERROR result",
+          "error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h42m27s.",
+        ].join("\n"),
+      ),
+      { provider: "antigravity", scope: "provider_turn", source: "stream" },
+    );
+    expect(quota).toMatchObject({
+      category: "provider_capacity",
+      reasonCode: "provider_usage_limit",
+      retryAfterMs: ((2 * 3600 + 42 * 60 + 27) * 1000) | 0,
+    });
+    expect(
+      decideProviderRetry({
+        classification: quota,
+        scope: "provider_turn",
+        attempt: 1,
+        replaySafety: "user_visible",
+      }),
+    ).toMatchObject({
+      action: "stop",
+      reasonCode: "capacity_wait_required",
+      terminalKind: "capacity_wait_required",
+    });
+
     const platform = classifyProviderFailure(new Error("Antigravity is not supported on Windows in v1"), {
       provider: "antigravity",
       scope: "session_start",

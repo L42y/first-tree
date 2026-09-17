@@ -82,7 +82,7 @@ export function classifyProviderFailure(
   const base = classify(err, source ? { source } : undefined);
   const shape = readErrorShape(err);
   const text = `${shape.name ?? ""} ${shape.message ?? ""} ${shape.code ?? ""} ${shape.reason ?? ""}`.toLowerCase();
-  const retryAfterMs = readRetryAfterMs(shape);
+  const retryAfterMs = readRetryAfterMs(shape) ?? parseResetsInDurationMs(text);
   const status = shape.status ?? shape.statusCode;
 
   const runtimeSessionReason = runtimeSessionProofReason(shape, text);
@@ -531,6 +531,16 @@ function readErrorShape(err: unknown): ErrorShape {
   };
 }
 
+function parseResetsInDurationMs(text: string): number | undefined {
+  const match = /resets in (?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/.exec(text);
+  if (!match || (match[1] === undefined && match[2] === undefined && match[3] === undefined)) return undefined;
+  const hours = Number(match[1] ?? 0);
+  const minutes = Number(match[2] ?? 0);
+  const seconds = Number(match[3] ?? 0);
+  const totalMs = ((hours * 3600 + minutes * 60 + seconds) * 1000) | 0;
+  return totalMs > 0 ? totalMs : undefined;
+}
+
 function readRetryAfterMs(shape: ErrorShape): number | undefined {
   if (typeof shape.retryAfterMs === "number" && Number.isFinite(shape.retryAfterMs) && shape.retryAfterMs >= 0) {
     return Math.floor(shape.retryAfterMs);
@@ -678,6 +688,10 @@ function isConfiguration(text: string, base: Classification, provider: RuntimePr
       text,
     )
   ) {
+    // An ERROR result or extra stream noise must not mask a recoverable
+    // quota/auth failure as a configuration problem.
+    if (isCapacity(text, base, undefined, provider) || isBillingLimit(text)) return false;
+    if (/authentication required|unauthenticated|not logged in/.test(text)) return false;
     return true;
   }
   // Cursor CLI literal invalid-model / explicit-deny / trust-wall phrasings
