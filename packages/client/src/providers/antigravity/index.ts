@@ -274,13 +274,6 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
   let currentDrainPromise: Promise<void> | null = null;
   let drainingBatch: QueuedDelivery[] | null = null;
   let drainCancellationReason: string | null = null;
-  /**
-   * Explicit settlement from SessionRuntime — not inferred from reason text.
-   * Operator suspend and graceful drain set this so the provider-entered
-   * prefix can settle once; concurrency preemption and route retirement leave
-   * it unset so that prefix stays recoverable (ACK-none).
-   */
-  let settleProviderEntered = false;
   let pendingChatContextPrompt: string | null = null;
   const cumulativeUsageByConversation = new Map<string, AntigravityUsage>();
   const freshConversations = new Set<string>();
@@ -289,6 +282,7 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
   // custody identity so even an explicit same-row recovery cannot serialize
   // the original prompt into that conversation.
   const ambiguousProviderTurnKeys = new Set<string>();
+  let pendingTurnContinuation: ProviderContinuation | null = null;
 
   function ambiguousProviderTurnKey(sessionId: string | null, messages: readonly SessionMessage[]): string | null {
     if (!sessionId || messages.length !== 1) return null;
@@ -298,6 +292,15 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
   function rememberAmbiguousProviderTurn(sessionId: string | null, messages: readonly SessionMessage[]): void {
     const key = ambiguousProviderTurnKey(sessionId, messages);
     if (key) ambiguousProviderTurnKeys.add(key);
+    const messageId = messages[0]?.id;
+    if (sessionId && messages.length === 1 && messageId) {
+      pendingTurnContinuation = {
+        kind: "provider_continuation",
+        provider: runtimeProvider,
+        sessionId,
+        messageId,
+      };
+    }
   }
   const queue: QueuedDelivery[] = [];
 
@@ -734,9 +737,10 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
   }
 
   /**
-   * Operator pause / graceful drain of a provider-entered turn. Consume the
-   * delivery so the interrupted prompt is not replayed, but do not classify
-   * the operator cancellation as an unknown provider crash.
+   * Lifecycle cancellation of a provider-entered turn. Consume the delivery so
+   * the interrupted prompt is not replayed, but do not classify the
+   * cancellation as an unknown provider crash. Antigravity cannot resume the
+   * interrupted process, so preemption and retirement must fail closed too.
    */
   async function settleLifecycleConsumedTurn(input: {
     state: TurnState;
@@ -862,22 +866,17 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
           if (lifecycleObservedId) pendingLifecycleSessionId = lifecycleObservedId;
           if (drainingBatch?.some((entry) => entry.token === token)) drainingBatch = null;
           // A lifecycle cancellation leaves the interrupted process without a
-          // provider-supported resume primitive. Operator pause / graceful
-          // drain settle the provider-entered prefix once; preemption and
-          // route retirement keep ACK-none recovery custody.
+          // provider-supported resume primitive. Provider-entered work must
+          // fail closed so the original prompt cannot be serialized again;
+          // unentered queued work stays ACK-none via retryQueue.
           if (state.sawProviderActivity) {
-            if (settleProviderEntered) {
-              return settleLifecycleConsumedTurn({
-                state,
-                sessionCtx,
-                messages,
-                token,
-                expectedSessionId,
-              });
-            }
-            const lifecycleRecoveryReason = drainCancellationReason ?? "antigravity_turn_aborted_or_timed_out";
-            token.retry(messages, lifecycleRecoveryReason);
-            return false;
+            return settleLifecycleConsumedTurn({
+              state,
+              sessionCtx,
+              messages,
+              token,
+              expectedSessionId,
+            });
           }
           const lifecycleRecoveryReason = drainCancellationReason ?? "antigravity_turn_aborted_or_timed_out";
           token.retry(messages, lifecycleRecoveryReason);
@@ -1230,9 +1229,14 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
       if (!sessionId) throw new Error("Antigravity conversation ID unresolved");
       pendingLifecycleSessionId = null;
       if (delivered) writeSessionBriefingFingerprint(workspaceCwd, sessionId, computeBriefingFingerprint(briefing));
+      const continuation =
+        pendingTurnContinuation?.messageId === message.id && pendingTurnContinuation.sessionId === sessionId
+          ? pendingTurnContinuation
+          : undefined;
       return {
         sessionId,
         route: { kind: "owned", mode: "processing" },
+        ...(continuation ? { continuation } : {}),
       };
     },
 
@@ -1294,9 +1298,8 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
       return { kind: "owned", mode: "queued" };
     },
 
-    async suspend(reason, opts?: HandlerShutdownOptions) {
+    async suspend(reason, _opts?: HandlerShutdownOptions) {
       const recoveryReason = reason ?? "antigravity_suspend_before_terminal";
-      settleProviderEntered = opts?.settleProviderEntered === true;
       sessionActive = false;
       drainCancellationReason = recoveryReason;
       generation++;
@@ -1305,16 +1308,14 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
       if (drainingBatch) retryDrainingBatch(drainingBatch, recoveryReason);
       retryQueue(recoveryReason);
       drainCancellationReason = null;
-      settleProviderEntered = false;
       if (ctx) forgetAbandonedAntigravityAttemptWindowsForSession(ctx.agent.agentId, ctx.chatId);
       currentAbort = null;
       currentTurnPromise = null;
       initialTurnPreparing = false;
     },
 
-    async shutdown(reason, opts?: HandlerShutdownOptions) {
+    async shutdown(reason, _opts?: HandlerShutdownOptions) {
       const recoveryReason = reason ?? "antigravity_shutdown_before_terminal";
-      settleProviderEntered = opts?.settleProviderEntered === true;
       sessionActive = false;
       drainCancellationReason = recoveryReason;
       generation++;
@@ -1323,7 +1324,6 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
       if (drainingBatch) retryDrainingBatch(drainingBatch, recoveryReason);
       retryQueue(recoveryReason);
       drainCancellationReason = null;
-      settleProviderEntered = false;
       if (ctx) forgetAbandonedAntigravityAttemptWindowsForSession(ctx.agent.agentId, ctx.chatId);
       currentAbort = null;
       currentTurnPromise = null;
