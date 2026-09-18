@@ -592,6 +592,25 @@ describe("agent-chat-status", () => {
       expect(s?.main).toBe("ready");
     });
 
+    it("predictive active write keeps NULL stamp so old-client activity still reads working", async () => {
+      const { app, admin, peer, chatId } = await newChatWithAgent();
+      await bindPresence(peer.agent.uuid, peer.clientId);
+      await upsertSessionState(app.db, peer.agent.uuid, chatId, "active", admin.organizationId);
+      await insertEvent(peer.agent.uuid, chatId, 1, "tool_call", { name: "Bash", args: { command: "ls" } });
+      const s = (await getChatAgentStatuses(app.db, chatId)).find((x) => x.agentId === peer.agent.uuid);
+      expect(s?.working).toBe(true);
+      expect(s?.main).toBe("working");
+    });
+
+    it("predictive active write keeps NULL stamp so old-client presence error still reads failed", async () => {
+      const { app, admin, peer, chatId } = await newChatWithAgent();
+      await bindPresence(peer.agent.uuid, peer.clientId, "error");
+      await upsertSessionState(app.db, peer.agent.uuid, chatId, "active", admin.organizationId);
+      const s = (await getChatAgentStatuses(app.db, chatId)).find((x) => x.agentId === peer.agent.uuid);
+      expect(s?.errored).toBe(true);
+      expect(s?.main).toBe("failed");
+    });
+
     it("fresh blocked runtime surfaces as recovery, not working", async () => {
       const { app, peer, chatId } = await newChatWithAgent();
       await bindPresence(peer.agent.uuid, peer.clientId);

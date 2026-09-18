@@ -216,7 +216,7 @@ describe("upsertSessionState — touchPresenceLastSeen option", () => {
     expect(secondSeen).toBe(firstSeen);
   });
 
-  it("stamps idle on first active write so a wake cannot inherit Failed", async () => {
+  it("leaves runtime_state_at NULL on first active write so old-client fallback stays live", async () => {
     const { app, admin, agent, chat } = await setup();
     await upsertSessionState(app.db, agent.uuid, chat.id, "active", admin.organizationId);
     const [row] = await app.db
@@ -228,7 +228,21 @@ describe("upsertSessionState — touchPresenceLastSeen option", () => {
       .from(agentChatSessions)
       .where(and(eq(agentChatSessions.agentId, agent.uuid), eq(agentChatSessions.chatId, chat.id)));
     expect(row).toMatchObject({ state: "active", runtimeState: "idle" });
-    expect(row?.runtimeStateAt).toBeInstanceOf(Date);
+    expect(row?.runtimeStateAt).toBeNull();
+  });
+
+  it("does not stamp a NULL runtime_state_at on a later active wake", async () => {
+    const { app, admin, agent, chat } = await setup();
+    await upsertSessionState(app.db, agent.uuid, chat.id, "active", admin.organizationId);
+    const notifier = makeNotifier();
+    await upsertSessionState(app.db, agent.uuid, chat.id, "active", admin.organizationId, notifier);
+    const [row] = await app.db
+      .select({ runtimeStateAt: agentChatSessions.runtimeStateAt })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agent.uuid), eq(agentChatSessions.chatId, chat.id)));
+    expect(row?.runtimeStateAt).toBeNull();
+    expect(notifier.notifySessionStateChange).not.toHaveBeenCalled();
+    expect(notifier.notifySessionRuntime).not.toHaveBeenCalled();
   });
 
   it("keeps a fresh working turn across a same-session wake", async () => {
@@ -394,7 +408,8 @@ describe("setSessionRuntime — per-(agent,chat) D-axis writer", () => {
       type: "group",
       participantIds: [agent.uuid],
     });
-    // Bring the session row into existence + state='active' (idle, stamped).
+    // Bring the session row into existence + state='active' (default
+    // runtime_state='idle', runtime_state_at=NULL — the transient sentinel).
     await upsertSessionState(app.db, agent.uuid, chat.id, "active", admin.organizationId);
     return { app, admin, agent, chat };
   }
@@ -427,7 +442,7 @@ describe("setSessionRuntime — per-(agent,chat) D-axis writer", () => {
   it("fresh same-value re-affirm: bumps timestamp but does NOT notify", async () => {
     const { app, admin, agent, chat } = await setupActive();
     const notifier = makeNotifier();
-    // First call: idle → working (notifies — boundary crossing).
+    // First call: NULL → working (notifies — boundary crossing).
     await setSessionRuntime(app.db, agent.uuid, chat.id, "working", admin.organizationId, notifier);
     const firstAt = (await readRuntime(app, agent.uuid, chat.id))?.runtimeStateAt?.getTime() ?? 0;
     vi.mocked(notifier.notifySessionRuntime).mockClear();

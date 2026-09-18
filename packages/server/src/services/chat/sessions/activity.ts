@@ -1,5 +1,5 @@
 import { RUNTIME_STALE_MS, type RuntimeState, type SessionState } from "@first-tree/shared";
-import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
 import type { Database } from "../../../db/connection.js";
 import { agentChatSessions } from "../../../db/schema/agent-chat-sessions.js";
 import { agentPresence } from "../../../db/schema/agent-presence.js";
@@ -39,14 +39,13 @@ export async function upsertSessionState(
   const now = new Date();
   const revokesRuntime = state !== "active";
   let projectionChanged = false;
+  let repairedFaultRuntime = false;
   await db.transaction(async (tx) => {
     // Short-circuit when the row is already at the target state: skip the
     // updatedAt refresh so steady-state messaging doesn't churn the row.
     // Insertions, lifecycle transitions (evicted → active, active →
-    // suspended, etc.), one-time repair of a non-idle runtime retained by
-    // an already-inactive row, and a wake that would otherwise inherit a
-    // Failed-causing D-axis (stale in-flight / leftover error / NULL stamp)
-    // still take the UPDATE branch.
+    // suspended, etc.), and one-time repair of a non-idle runtime retained by
+    // an already-inactive row still take the UPDATE branch.
     //
     // We use `.returning()` to detect whether INSERT/UPDATE actually fired —
     // PostgreSQL omits returning rows when the ON CONFLICT DO UPDATE's
@@ -61,74 +60,101 @@ export async function upsertSessionState(
     // client's `heartbeat` frame is the canonical lastSeenAt refresh
     // path (see presence.ts:touchAgent), so dropping the lastSeenAt
     // side-effect here is safe.
-    //
-    // Active writes stamp `idle` rather than leaving a prior D-axis in place.
-    // A mention predictively marks the session active before the Client has
-    // reported this turn; inheriting stale `working`/`error` made that wake
-    // read as Failed until the first fresh `working` frame. Fresh working is
-    // still a no-op so a second message into a live turn cannot flash Idle.
-    const idleRuntime = { state, runtimeState: "idle" as const, runtimeStateAt: now, updatedAt: now };
     const rows = await tx
       .insert(agentChatSessions)
-      .values({ agentId, chatId, ...idleRuntime })
+      .values(
+        revokesRuntime
+          ? { agentId, chatId, state, runtimeState: "idle", runtimeStateAt: now, updatedAt: now }
+          : { agentId, chatId, state, updatedAt: now },
+      )
       .onConflictDoUpdate({
         target: [agentChatSessions.agentId, agentChatSessions.chatId],
-        set: idleRuntime,
+        set: revokesRuntime
+          ? { state, runtimeState: "idle", runtimeStateAt: now, updatedAt: now }
+          : { state, updatedAt: now },
+        // An inactive row retaining a non-idle runtime is also a real
+        // projection change even when its lifecycle value is already equal.
+        // Repair it once, then keep duplicate inactive frames as no-ops.
         setWhere: revokesRuntime
           ? or(ne(agentChatSessions.state, state), ne(agentChatSessions.runtimeState, "idle"))
-          : or(
-              ne(agentChatSessions.state, "active"),
-              inArray(agentChatSessions.runtimeState, ["error", "blocked"]),
-              isNull(agentChatSessions.runtimeStateAt),
-              and(
-                eq(agentChatSessions.runtimeState, "working"),
-                sql`${agentChatSessions.runtimeStateAt} < NOW() - ${sql.raw(String(RUNTIME_STALE_MS))} * interval '1 millisecond'`,
-              ),
-            ),
+          : ne(agentChatSessions.state, state),
       })
       .returning({ agentId: agentChatSessions.agentId });
 
-    if (rows.length === 0) return;
-    projectionChanged = true;
+    if (rows.length > 0) {
+      projectionChanged = true;
 
-    // Active runtime values are owned by `session:runtime` once the Client
-    // reports. Lifecycle writes (inactivation, and an active wake that is
-    // not already fresh working) atomically stamp idle so a dropped,
-    // reordered, or stale client edge cannot leave Failed behind.
-    const [counts] = await tx
-      .select({
-        active: sql<number>`count(*) FILTER (WHERE ${agentChatSessions.state} = 'active')::int`,
-        total: sql<number>`count(*) FILTER (WHERE ${agentChatSessions.state} != 'evicted')::int`,
-      })
-      .from(agentChatSessions)
-      .where(eq(agentChatSessions.agentId, agentId));
+      // Active runtime values are owned by `session:runtime`. Lifecycle
+      // inactivation is the revocation authority and atomically writes idle so
+      // a dropped/reordered client edge cannot leave working behind.
+      const [counts] = await tx
+        .select({
+          active: sql<number>`count(*) FILTER (WHERE ${agentChatSessions.state} = 'active')::int`,
+          total: sql<number>`count(*) FILTER (WHERE ${agentChatSessions.state} != 'evicted')::int`,
+        })
+        .from(agentChatSessions)
+        .where(eq(agentChatSessions.agentId, agentId));
 
-    const activeSessions = counts?.active ?? 0;
-    const totalSessions = counts?.total ?? 0;
+      const activeSessions = counts?.active ?? 0;
+      const totalSessions = counts?.total ?? 0;
 
-    // `lastSeenAt` is owned by the client's bind/heartbeat. Skip it on
-    // server-predictive writes (e.g. sendMessage upserting active on first
-    // message); default-true preserves the WS `session:state` path's behavior.
-    // Note: when the row is being inserted (no prior presence), the schema's
-    // `lastSeenAt` default (now()) populates it regardless — touchLastSeen
-    // only governs subsequent UPDATE behavior.
-    const touchLastSeen = options?.touchPresenceLastSeen ?? true;
-    const presenceSet = touchLastSeen
-      ? { activeSessions, totalSessions, lastSeenAt: now }
-      : { activeSessions, totalSessions };
+      // `lastSeenAt` is owned by the client's bind/heartbeat. Skip it on
+      // server-predictive writes (e.g. sendMessage upserting active on first
+      // message); default-true preserves the WS `session:state` path's behavior.
+      // Note: when the row is being inserted (no prior presence), the schema's
+      // `lastSeenAt` default (now()) populates it regardless — touchLastSeen
+      // only governs subsequent UPDATE behavior.
+      const touchLastSeen = options?.touchPresenceLastSeen ?? true;
+      const presenceSet = touchLastSeen
+        ? { activeSessions, totalSessions, lastSeenAt: now }
+        : { activeSessions, totalSessions };
 
-    await tx
-      .insert(agentPresence)
-      .values({ agentId, activeSessions, totalSessions })
-      .onConflictDoUpdate({
-        target: [agentPresence.agentId],
-        set: presenceSet,
-      });
+      await tx
+        .insert(agentPresence)
+        .values({ agentId, activeSessions, totalSessions })
+        .onConflictDoUpdate({
+          target: [agentPresence.agentId],
+          set: presenceSet,
+        });
+    }
+
+    // A mention predictively marks the session active before this turn's
+    // `session:runtime`. A *stamped* leftover in-flight D-axis would make
+    // that wake read as Failed. Idle it, but only when a stamp already
+    // exists: a NULL stamp is the old-client discriminator for
+    // `computeWorking` / `computeErrored` and must not be filled in by a
+    // server-predicted write.
+    if (!revokesRuntime) {
+      const repaired = await tx
+        .update(agentChatSessions)
+        .set({ runtimeState: "idle", runtimeStateAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(agentChatSessions.agentId, agentId),
+            eq(agentChatSessions.chatId, chatId),
+            eq(agentChatSessions.state, "active"),
+            or(
+              inArray(agentChatSessions.runtimeState, ["error", "blocked"]),
+              and(
+                eq(agentChatSessions.runtimeState, "working"),
+                isNotNull(agentChatSessions.runtimeStateAt),
+                sql`${agentChatSessions.runtimeStateAt} < NOW() - ${sql.raw(String(RUNTIME_STALE_MS))} * interval '1 millisecond'`,
+              ),
+            ),
+          ),
+        )
+        .returning({ agentId: agentChatSessions.agentId });
+      repairedFaultRuntime = repaired.length > 0;
+    }
   });
 
-  if (projectionChanged && notifier) {
-    notifier.notifySessionStateChange(agentId, chatId, state, organizationId).catch(() => {});
-    notifier.notifySessionRuntime(agentId, chatId, "idle", organizationId).catch(() => {});
+  if (notifier) {
+    if (projectionChanged || repairedFaultRuntime) {
+      notifier.notifySessionStateChange(agentId, chatId, state, organizationId).catch(() => {});
+    }
+    if ((revokesRuntime && projectionChanged) || repairedFaultRuntime) {
+      notifier.notifySessionRuntime(agentId, chatId, "idle", organizationId).catch(() => {});
+    }
   }
 }
 
