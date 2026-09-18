@@ -70,6 +70,14 @@ export function requiresUnsafeReplayNoticeCustody(provider: RuntimeProvider): bo
   return provider === "antigravity";
 }
 
+/**
+ * Providers that cannot resume an interrupted process start a new conversation
+ * when a one-delivery continuation does not match the current message.
+ */
+export function startsFreshOnMismatchedContinuation(provider: RuntimeProvider): boolean {
+  return requiresUnsafeReplayNoticeCustody(provider);
+}
+
 export function classifyProviderFailure(
   err: unknown,
   context: {

@@ -74,6 +74,7 @@ import {
   PROVIDER_UNSAFE_REPLAY_NOTICE_UNSETTLED,
   type ProviderFailureClassification,
   requiresUnsafeReplayNoticeCustody,
+  startsFreshOnMismatchedContinuation,
 } from "./provider-retry-policy.js";
 import { isAttachmentGoneError } from "./provider-support/attachment-availability.js";
 import { isContextSourceTransitionError } from "./provider-support/preparation.js";
@@ -2277,15 +2278,15 @@ export class SessionRuntime {
   }
 
   /**
-   * Antigravity cannot resume an interrupted process. A one-delivery
-   * continuation that does not match the current message must not mark the
-   * session Failed forever; drop it so the next turn starts a new conversation.
+   * Providers that cannot resume an interrupted process must not mark the
+   * session Failed forever when a one-delivery continuation does not match
+   * the current message. Drop it so the next turn starts a new conversation.
    */
-  private clearUnresumableAntigravityContinuation(entry: SessionEntry, reason: string): boolean {
-    if (this.runtimeProvider() !== "antigravity") return false;
+  private clearUnresumableProviderContinuation(entry: SessionEntry, reason: string): boolean {
+    if (!startsFreshOnMismatchedContinuation(this.runtimeProvider())) return false;
     this.config.log.warn(
       { chatId: entry.chatId, reason },
-      "dropping unresumable Antigravity continuation; next delivery starts a new conversation",
+      "dropping unresumable provider continuation; next delivery starts a new conversation",
     );
     entry.claudeSessionId = "";
     entry.providerContinuation = null;
@@ -2569,7 +2570,7 @@ export class SessionRuntime {
           this.runtimeProvider(),
         );
         if (evicted.continuation && !continuationOptions) {
-          if (!this.clearUnresumableAntigravityContinuation(entry, "session_eviction_provider_continuation_mismatch")) {
+          if (!this.clearUnresumableProviderContinuation(entry, "session_eviction_provider_continuation_mismatch")) {
             this.deferMismatchedProviderContinuation(
               entry,
               {
@@ -2841,7 +2842,7 @@ export class SessionRuntime {
         this.runtimeProvider(),
       );
       if (entry.providerContinuation && !continuationOptions) {
-        if (!this.clearUnresumableAntigravityContinuation(entry, "session_resume_provider_continuation_mismatch")) {
+        if (!this.clearUnresumableProviderContinuation(entry, "session_resume_provider_continuation_mismatch")) {
           this.deferMismatchedProviderContinuation(
             entry,
             {

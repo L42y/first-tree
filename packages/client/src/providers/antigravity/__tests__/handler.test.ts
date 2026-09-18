@@ -208,13 +208,16 @@ function createControlledSupervisor(
   closeAfterTurn: readonly boolean[] = [],
   closeExitCode = 0,
   stderrLines: readonly string[] = [],
+  stderrLinesByTurn: readonly (readonly string[])[] = [],
 ): ProviderProcessSupervisor {
   let turn = 0;
   return {
     spawn(spec) {
       specs.push(spec);
-      const currentOutputLines = outputLinesByTurn[turn] ?? outputLines;
-      const shouldCloseAfterOutput = closeAfterTurn[turn] ?? false;
+      const turnIndex = turn;
+      const currentOutputLines = outputLinesByTurn[turnIndex] ?? outputLines;
+      const currentStderrLines = stderrLinesByTurn[turnIndex] ?? stderrLines;
+      const shouldCloseAfterOutput = closeAfterTurn[turnIndex] ?? false;
       turn += 1;
       const stdin = new PassThrough();
       const stdout = new PassThrough();
@@ -251,7 +254,7 @@ function createControlledSupervisor(
       }) as typeof stdin.write;
       setImmediate(() => {
         for (const line of currentOutputLines) stdout.write(`${line}\n`);
-        for (const line of stderrLines) stderr.write(`${line}\n`);
+        for (const line of currentStderrLines) stderr.write(`${line}\n`);
         if (shouldCloseAfterOutput) complete();
       });
       return { child, exited: new Promise<void>((resolve) => child.once("close", () => resolve())) };
@@ -1414,6 +1417,113 @@ process.stdin.on("end", () => {
       expect.objectContaining({ status: "error", completion: "consumed", reason: "unsafe_replay" }),
     );
     expect(forwarded).toEqual(["first"]);
+    await handler.shutdown();
+  });
+
+  it("rejects a latest SUCCESS result from a different conversation than the resume target", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-result-id-mismatch-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(
+        specs,
+        inputs,
+        [],
+        [
+          [
+            JSON.stringify({ event: "init", conversation_id: "conversation-a" }),
+            JSON.stringify({
+              event: "result",
+              result: { conversation_id: "conversation-a", status: "SUCCESS", response: "first" },
+            }),
+          ],
+          [
+            JSON.stringify({ event: "init", conversation_id: "conversation-a" }),
+            JSON.stringify({
+              event: "result",
+              result: { conversation_id: "conversation-b", status: "SUCCESS", response: "answer-from-B" },
+            }),
+          ],
+        ],
+        [true, true],
+      ),
+      antigravityTurnTimeoutMs: 5_000,
+    });
+
+    const first = await handler.start(message("m1", "first prompt"), sessionCtx, deliveryToken());
+    expect(first.sessionId).toBe("conversation-a");
+    const secondToken = deliveryToken();
+    await handler.resume(message("m2", "follow-up"), "conversation-a", sessionCtx, secondToken);
+
+    expect(secondToken.retry).not.toHaveBeenCalled();
+    expect(secondToken.complete).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: "error", completion: "consumed" }),
+    );
+    expect(forwarded).toEqual(["first"]);
+    expect(JSON.stringify(events)).toContain("resume conversation mismatch");
+    await handler.shutdown();
+  });
+
+  it("retries a follow-up 503 without --conversation of the established session", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-followup-503-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const retrySleep = vi.fn(async () => true);
+    const stderr = "UNAVAILABLE (code 503): No capacity available for model gemini-3.8-flash-high on the server";
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(
+        specs,
+        inputs,
+        [],
+        [
+          [
+            JSON.stringify({ event: "init", conversation_id: "conversation-a" }),
+            JSON.stringify({
+              event: "result",
+              result: { conversation_id: "conversation-a", status: "SUCCESS", response: "first" },
+            }),
+          ],
+          [],
+          [],
+        ],
+        [true, false, false],
+        0,
+        [],
+        [[], [stderr], [stderr]],
+      ),
+      antigravityTurnTimeoutMs: 5_000,
+      antigravityRetrySleep: retrySleep,
+    });
+
+    await handler.start(message("m1", "first prompt"), sessionCtx, deliveryToken());
+    const secondToken = deliveryToken();
+    handler.inject(message("m2", "follow-up"), secondToken);
+    await vi.waitFor(() => expect(secondToken.retry).toHaveBeenCalled(), { timeout: 3_000 });
+    const retryToken = deliveryToken();
+    handler.inject(message("m2", "follow-up"), retryToken);
+    await vi.waitFor(() => expect(specs.length).toBeGreaterThanOrEqual(3), { timeout: 3_000 });
+
+    expect(specs[2]?.args).not.toContain("conversation-a");
+    expect(JSON.stringify(events)).toContain("No capacity available");
     await handler.shutdown();
   });
 

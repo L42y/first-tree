@@ -96,7 +96,7 @@ type ProcessOutcome = {
 type TurnState = {
   parser: AntigravityStreamParser;
   sessionIds: Set<string>;
-  results: Array<{ isError: boolean; text: string }>;
+  results: Array<{ isError: boolean; text: string; sessionId: string | null }>;
   errors: string[];
   text: string[];
   usage: AntigravityUsage | null;
@@ -544,7 +544,7 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
       case "result":
         // Resume can replay earlier terminal events. Only the latest result
         // is this turn; drop prior ERROR bodies so they cannot classify it.
-        state.results = [{ isError: event.isError, text: event.text }];
+        state.results = [{ isError: event.isError, text: event.text, sessionId: event.sessionId ?? null }];
         state.errors = [];
         if (event.sessionId) state.sessionIds.add(event.sessionId);
         if (event.usage) state.usage = event.usage;
@@ -905,8 +905,10 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
         }
         const capacityDiagnostic = antigravityCapacityDiagnostic([outcome.stderrTail, ...state.errors].join("\n"));
         if (capacityDiagnostic && !state.sawUnsafeTool && state.results.length === 0) {
-          // Do not keep the conversation id: resuming the same cascade would
-          // sit in agy's internal 503 retry loop again.
+          // Drop an already-established conversation so the capacity retry
+          // cannot spawn `--conversation` for the same 503 cascade.
+          providerSessionId = null;
+          pendingLifecycleSessionId = null;
           return settleFailure({
             failure: capacityDiagnostic,
             state: { sawProviderActivity: false, sawUnsafeTool: false, text: [] },
@@ -943,14 +945,12 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
         const ids = [...state.sessionIds];
         const protocolErrors: string[] = [];
         const result = state.results.at(-1);
-        const id =
-          expectedSessionId && state.sessionIds.has(expectedSessionId)
-            ? expectedSessionId
-            : ids.length === 1
-              ? ids[0]
-              : undefined;
+        const resultId = result?.sessionId ?? null;
+        const id = resultId ?? (ids.length === 1 ? ids[0] : undefined);
         if (!id) protocolErrors.push(`expected one conversation ID, observed ${ids.length}`);
-        if (expectedSessionId && id && id !== expectedSessionId) {
+        if (expectedSessionId && resultId && resultId !== expectedSessionId) {
+          protocolErrors.push(`resume conversation mismatch: expected ${expectedSessionId}, observed ${resultId}`);
+        } else if (expectedSessionId && id && id !== expectedSessionId) {
           protocolErrors.push(`resume conversation mismatch: expected ${expectedSessionId}, observed ${id}`);
         }
         if (!result) {
