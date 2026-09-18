@@ -1239,8 +1239,8 @@ process.stdin.on("end", () => {
     await handler.shutdown();
   });
 
-  it("routes a pre-provider timeout through retry settlement", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-pre-provider-timeout-"));
+  it("fails closed on timeout after the prompt was written instead of retrying as transport", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-prompt-timeout-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const inputs: string[] = [];
@@ -1262,9 +1262,53 @@ process.stdin.on("end", () => {
 
     await handler.start(message("m1", "please respond"), sessionCtx, token);
 
-    expect(token.retry).toHaveBeenCalledWith(expect.anything(), "operation_timeout");
-    expect(token.complete).not.toHaveBeenCalled();
-    expect(retrySleep).toHaveBeenCalledWith(500, expect.any(AbortSignal));
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(retrySleep).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: "error", completion: "consumed", reason: "unsafe_replay" }),
+    );
+    expect(JSON.stringify(events)).not.toContain("after retrying a transient provider or network failure");
+    await handler.shutdown();
+  });
+
+  it("delivers assistant text obtained before a turn timeout", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-timeout-text-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const report = "Waiting for PR status check to complete.";
+    const output = [
+      JSON.stringify({ event: "init", conversation_id: "conversation-timeout-text" }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          conversation_id: "conversation-timeout-text",
+          step_type: "agent_response",
+          text_delta: report,
+        },
+      }),
+    ];
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(specs, inputs, output),
+      antigravityTurnTimeoutMs: 50,
+    });
+    const token = deliveryToken();
+
+    await handler.start(message("m-timeout-text", "check the PR"), sessionCtx, token);
+
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(expect.anything(), { status: "success" });
+    expect(forwarded).toEqual([report]);
+    expect(JSON.stringify(events)).not.toContain("after retrying a transient provider or network failure");
     await handler.shutdown();
   });
 
@@ -1301,7 +1345,7 @@ process.stdin.on("end", () => {
     await handler.shutdown();
   });
 
-  it("keeps pending retry accounting across an unrelated handler shutdown", async () => {
+  it("does not reopen a fail-closed timeout after an unrelated handler shutdown", async () => {
     const root = mkdtempSync(join(tmpdir(), "ft-antigravity-attempt-scope-"));
     roots.push(root);
     const failingSpecs: ProviderProcessSpec[] = [];
@@ -1320,7 +1364,11 @@ process.stdin.on("end", () => {
     });
     const activeMessage = message("m1", "first attempt");
     const firstToken = deliveryToken();
-    const activeStart = await activeHandler.start(activeMessage, context(events, forwarded), firstToken);
+    await activeHandler.start(activeMessage, context(events, forwarded), firstToken);
+    expect(firstToken.complete).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: "error", completion: "consumed", reason: "unsafe_replay" }),
+    );
 
     const unrelatedSpecs: ProviderProcessSpec[] = [];
     const unrelatedInputs: string[] = [];
@@ -1342,22 +1390,8 @@ process.stdin.on("end", () => {
     );
     await unrelatedHandler.shutdown();
 
-    const secondToken = deliveryToken();
-    await activeHandler.resume(activeMessage, activeStart.sessionId, context(events, forwarded), secondToken);
-    expect(secondToken.retry).toHaveBeenCalledTimes(1);
-
-    const thirdToken = deliveryToken();
-    await activeHandler.resume(activeMessage, activeStart.sessionId, context(events, forwarded), thirdToken);
-    expect(thirdToken.complete).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ status: "error", completion: "consumed", reason: "operation_timeout_exhausted" }),
-    );
-
-    expect(providerRetryEventNames(events)).toEqual([
-      "provider_retry_scheduled",
-      "provider_retry_scheduled",
-      "provider_retry_exhausted",
-    ]);
+    expect(firstToken.retry).not.toHaveBeenCalled();
+    expect(JSON.stringify(events)).not.toContain("after retrying a transient provider or network failure");
     await activeHandler.shutdown();
   });
 });

@@ -475,6 +475,10 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
       try {
         child.stdin?.write(`${JSON.stringify({ event: "user", message: { content: input.prompt } })}\n`);
         child.stdin?.end();
+        // Prompt bytes have been handed to the child. Later abort cannot claim
+        // the Provider never received input, so replay is unsafe.
+        input.state.sawProviderActivity = true;
+        input.sessionCtx.recordProviderActivity();
       } catch (error) {
         spawnError = error instanceof Error ? error : new Error(String(error));
         try {
@@ -883,14 +887,56 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
           return false;
         }
         if (abort.signal.aborted) {
-          // A timeout/provider abort is a provider attempt, not an implicit
-          // safe redelivery. If the stream already observed a mutating tool,
-          // settleFailure must terminate as unsafe_replay. Preserve a single
-          // exact conversation id first so a later explicit resume cannot
-          // accidentally create a second Antigravity conversation.
+          // Timeout after the prompt was written is not a transport blip:
+          // Antigravity cannot resume, and TimeoutError would retry as
+          // transient network. Deliver output already obtained; otherwise
+          // fail closed without a TimeoutError name.
           adoptObservedSessionId(sessionCtx, state.sessionIds, expectedSessionId, state.usage);
+          const ids = [...state.sessionIds];
+          const finalText = (state.results[0]?.text || state.text.join("")).trim();
+          const diagnosticFailure = Boolean(state.results[0]?.isError) || state.errors.length > 0;
+          if (ids.length === 1 && finalText && !diagnosticFailure) {
+            const id = ids[0];
+            if (!id) throw new Error("Antigravity timeout delivery without conversation ID");
+            adoptSessionId(sessionCtx, id);
+            if (!expectedSessionId) freshConversations.add(id);
+            for (const chunk of chunkAssistantText(finalText)) {
+              sessionCtx.emitEvent({ kind: "assistant_text", payload: { text: chunk } });
+            }
+            if (state.usage) emitAntigravityUsage(sessionCtx, payload, id, state.usage);
+            try {
+              await sessionCtx.forwardResult(finalText);
+            } catch (error) {
+              sessionCtx.emitEvent({
+                kind: "error",
+                payload: {
+                  source: "runtime",
+                  message: `forwardResult failed: ${error instanceof Error ? error.message : String(error)}`.slice(
+                    0,
+                    2000,
+                  ),
+                },
+              });
+              sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
+              const completion = await token.complete(messages, {
+                status: "error",
+                completion: "consumed",
+                reason: "forward_failed",
+              });
+              if (completion === "retry") return false;
+              providerTurnFailureAttempts.delete(providerAttemptKey(sessionCtx, messages));
+              pendingChatContextPrompt = null;
+              return true;
+            }
+            sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "success" } });
+            const completion = await token.complete(messages, { status: "success" });
+            if (completion === "retry") return false;
+            providerTurnFailureAttempts.delete(providerAttemptKey(sessionCtx, messages));
+            if (pendingChatContextPrompt === oneShotPrompt) pendingChatContextPrompt = null;
+            writeSessionBriefingFingerprint(workspaceCwd, id, computeBriefingFingerprint(briefing));
+            return true;
+          }
           const abortError = new Error("Antigravity turn aborted or timed out before a safe terminal event");
-          abortError.name = "TimeoutError";
           return settleFailure({
             failure: abortError.message,
             spawnError: abortError,
