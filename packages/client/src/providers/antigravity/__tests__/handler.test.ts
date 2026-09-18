@@ -1418,6 +1418,60 @@ process.stdin.on("end", () => {
     await handler.shutdown();
   });
 
+  it("ignores a replayed historical quota ERROR when the latest result succeeded", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-stale-quota-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const leftover = `{"role":null,"message-preview":"gREKhgz+odn0Zc8cCm96i8sp1Xy5gQ","status":"completed"}`;
+    const quota =
+      "API error (attempt 6): RESOURCE_EXHAUSTED (code 429): Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h53m10s.";
+    const output = [
+      leftover,
+      JSON.stringify({ event: "init", conversation_id: "conversation-stale" }),
+      JSON.stringify({
+        event: "result",
+        result: {
+          conversation_id: "conversation-stale",
+          status: "ERROR",
+          response: "",
+          error: quota,
+        },
+      }),
+      JSON.stringify({ event: "init", conversation_id: "conversation-stale" }),
+      JSON.stringify({
+        event: "result",
+        result: {
+          conversation_id: "conversation-stale",
+          status: "SUCCESS",
+          response: "Reviewed the latest head. No blocking findings.",
+        },
+      }),
+    ];
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(specs, inputs, output, [], [true]),
+      antigravityTurnTimeoutMs: 5_000,
+    });
+    const token = deliveryToken();
+
+    await handler.start(message("m-stale", "review the PR"), sessionCtx, token);
+
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(expect.anything(), { status: "success" });
+    expect(forwarded).toEqual(["Reviewed the latest head. No blocking findings."]);
+    expect(JSON.stringify(events)).not.toContain("runtime configuration needs attention");
+    expect(JSON.stringify(events)).not.toContain("Individual quota reached");
+    await handler.shutdown();
+  });
+
   it("does not reopen a fail-closed timeout after an unrelated handler shutdown", async () => {
     const root = mkdtempSync(join(tmpdir(), "ft-antigravity-attempt-scope-"));
     roots.push(root);

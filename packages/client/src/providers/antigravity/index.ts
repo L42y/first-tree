@@ -528,7 +528,10 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
         state.usage = event.usage;
         break;
       case "result":
-        state.results.push({ isError: event.isError, text: event.text });
+        // Resume can replay earlier terminal events. Only the latest result
+        // is this turn; drop prior ERROR bodies so they cannot classify it.
+        state.results = [{ isError: event.isError, text: event.text }];
+        state.errors = [];
         if (event.sessionId) state.sessionIds.add(event.sessionId);
         if (event.usage) state.usage = event.usage;
         break;
@@ -912,24 +915,28 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
 
         const ids = [...state.sessionIds];
         const protocolErrors: string[] = [];
-        if (ids.length !== 1) protocolErrors.push(`expected one conversation ID, observed ${ids.length}`);
-        if (expectedSessionId && ids[0] !== expectedSessionId) {
-          protocolErrors.push(
-            `resume conversation mismatch: expected ${expectedSessionId}, observed ${ids[0] ?? "none"}`,
-          );
+        const result = state.results.at(-1);
+        const id =
+          expectedSessionId && state.sessionIds.has(expectedSessionId)
+            ? expectedSessionId
+            : ids.length === 1
+              ? ids[0]
+              : undefined;
+        if (!id) protocolErrors.push(`expected one conversation ID, observed ${ids.length}`);
+        if (expectedSessionId && id && id !== expectedSessionId) {
+          protocolErrors.push(`resume conversation mismatch: expected ${expectedSessionId}, observed ${id}`);
         }
-        if (state.results.length !== 1) {
+        if (!result) {
           protocolErrors.push(`expected one terminal result event, observed ${state.results.length}`);
         }
         const providerErrorText = state.errors.join("\n").trim();
         let agentAuthoredError = false;
-        if (providerErrorText && state.results.length === 1 && ids.length === 1) {
+        if (providerErrorText && result && id) {
           const classification = classifyProviderFailure(new Error(providerErrorText), {
             provider: runtimeProvider,
             scope: "provider_turn",
             source: "stream",
           });
-          const result = state.results[0];
           if (
             isAntigravityRuntimeFailureCategory(classification.category) ||
             !looksLikeNoOpWebhookReport(providerErrorText)
@@ -942,28 +949,27 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
         } else if (state.errors.length > 0) {
           protocolErrors.push(...state.errors);
         }
-        if (state.protocolDiagnostics.length > 0 && state.results.length !== 1) {
+        if (state.protocolDiagnostics.length > 0 && !result) {
           protocolErrors.push(
             `unsupported or malformed Antigravity stream (${state.protocolDiagnostics.length} line${
               state.protocolDiagnostics.length === 1 ? "" : "s"
             })`,
           );
         }
-        if (state.results[0]?.isError && state.errors.length === 0 && !agentAuthoredError) {
+        if (result?.isError && state.errors.length === 0 && !agentAuthoredError) {
           protocolErrors.push("Antigravity returned an ERROR result");
         }
 
-        const deliveredResult = state.results.length === 1 && !state.results[0]?.isError;
+        const deliveredResult = Boolean(result) && !result?.isError;
         const success =
           !outcome.spawnError &&
           protocolErrors.length === 0 &&
           (outcome.exitCode === 0 || ((agentAuthoredError || deliveredResult) && outcome.exitCode !== null));
         if (success) {
-          const id = ids[0];
           if (!id) throw new Error("Antigravity success without conversation ID");
           adoptSessionId(sessionCtx, id);
           if (!expectedSessionId) freshConversations.add(id);
-          const finalText = state.results[0]?.text || state.text.join("");
+          const finalText = result?.text || state.text.join("");
           for (const chunk of chunkAssistantText(finalText)) {
             sessionCtx.emitEvent({ kind: "assistant_text", payload: { text: chunk } });
           }
@@ -1008,7 +1014,7 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
           ...protocolErrors,
           outcome.spawnError?.message,
           outcome.stderrTail,
-          outcome.stdoutTail,
+          result ? undefined : outcome.stdoutTail,
           outcome.exitCode === null ? `signal ${outcome.signal ?? "unknown"}` : `exit ${outcome.exitCode}`,
         ]
           .filter((value): value is string => Boolean(value?.trim()))
