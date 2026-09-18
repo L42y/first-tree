@@ -1038,6 +1038,59 @@ process.stdin.on("end", () => {
     await handler.shutdown();
   });
 
+  it("keeps a later runtime ERROR after earlier assistant progress in the failure path", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-sqlite-after-progress-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const diagnostic = "database disk image is malformed while loading the conversation state";
+    const output = [
+      JSON.stringify({ event: "init", conversation_id: "conversation-sqlite-progress" }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          conversation_id: "conversation-sqlite-progress",
+          step_type: "agent_response",
+          text_delta: "I will inspect the saved conversation before continuing.",
+        },
+      }),
+      JSON.stringify({
+        event: "result",
+        result: {
+          conversation_id: "conversation-sqlite-progress",
+          status: "ERROR",
+          response: "",
+          error: diagnostic,
+        },
+      }),
+    ];
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(specs, inputs, output, [], [true], 1),
+      antigravityTurnTimeoutMs: 5_000,
+    });
+    const token = deliveryToken();
+
+    await handler.start(message("m-sqlite-progress", "please respond"), sessionCtx, token);
+
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: "error", completion: "consumed" }),
+    );
+    expect(forwarded).toEqual([]);
+    expect(JSON.stringify(events)).toContain(diagnostic);
+    expect(JSON.stringify(events)).not.toContain('"status":"success"');
+    await handler.shutdown();
+  });
+
   it("does not treat an ERROR review body that mentions sign-in as a credential failure", async () => {
     const root = mkdtempSync(join(tmpdir(), "ft-antigravity-review-error-"));
     roots.push(root);

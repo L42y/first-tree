@@ -594,13 +594,17 @@ function isCredential(
   status: number | undefined,
   provider: RuntimeProvider,
 ): boolean {
-  if (provider === "antigravity") return isAntigravityAuthDiagnostic(text);
-  if (
+  const structuredAuth =
     status === 401 ||
     status === 403 ||
     base.reasonCode.includes("auth") ||
     base.reasonCode.includes("unauthorized") ||
-    AUTH_HTTP_CODE_RE.test(text) ||
+    AUTH_HTTP_CODE_RE.test(text);
+  if (provider === "antigravity") {
+    return structuredAuth || isAntigravityAuthDiagnostic(text);
+  }
+  if (
+    structuredAuth ||
     /unauthorized|forbidden|invalid api key|invalid_api_key|authentication|login required|not authenticated|oauth_org_not_allowed|auth\.(?:login_required|provisioning_required|token_missing|token_unauthorized|model_not_resolved)|provider\.auth_error/.test(
       text,
     )

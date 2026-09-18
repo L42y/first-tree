@@ -924,10 +924,7 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
           const result = state.results[0];
           if (
             isAntigravityRuntimeFailureCategory(classification.category) ||
-            !shouldDeliverUnknownAntigravityError({
-              providerErrorText,
-              streamedAssistant: state.text.some((chunk) => chunk.trim().length > 0),
-            })
+            !looksLikeNoOpWebhookReport(providerErrorText)
           ) {
             protocolErrors.push(providerErrorText);
           } else {
@@ -1400,19 +1397,6 @@ function looksLikeNoOpWebhookReport(text: string): boolean {
     .join("\n");
   if (!body) return false;
   return /no-op webhook event on (?:pr|issue) #\d+/i.test(body);
-}
-
-/**
- * Unknown ERROR can be the agent's mid-turn output. Deliver it only with
- * stream evidence (assistant_delta already observed) or the no-op webhook
- * report. Empty-response diagnostics with no assistant stream stay failures.
- */
-function shouldDeliverUnknownAntigravityError(input: {
-  providerErrorText: string;
-  streamedAssistant: boolean;
-}): boolean {
-  if (looksLikeNoOpWebhookReport(input.providerErrorText)) return true;
-  return input.streamedAssistant;
 }
 
 export type { AntigravityMcpConfig };

@@ -433,6 +433,17 @@ describe("classifyProviderFailure", () => {
       { provider: "antigravity", scope: "provider_turn", source: "stream" },
     );
     expect(review.category).toBe("unknown");
+
+    const rejected401 = classifyProviderFailure(
+      Object.assign(new Error("Request rejected by upstream"), { status: 401 }),
+      { provider: "antigravity", scope: "provider_turn", source: "sdk" },
+    );
+    expect(rejected401.category).toBe("credential");
+    const rejected403 = classifyProviderFailure(
+      Object.assign(new Error("Request rejected by upstream"), { status: 403 }),
+      { provider: "antigravity", scope: "provider_turn", source: "sdk" },
+    );
+    expect(rejected403.category).toBe("credential");
   });
 
   it("classifies Pi credential phrasings as needs_operator and does not unknown-retry them", () => {
