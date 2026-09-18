@@ -575,12 +575,26 @@ function runtimeSessionProofReason(shape: ErrorShape, text: string): string | nu
   return null;
 }
 
+function isAntigravityAuthDiagnostic(text: string): boolean {
+  // Keep in sync with isAntigravityAuthError. Bare "authentication" / "sign in" /
+  // "credential" appear in agent ERROR reports (reviews, feature write-ups) and
+  // must not become a re-login prompt.
+  return (
+    /authentication required|not authenticated|login required|\bunauthorized\b|gemini_api_key|token missing|token expired|invalid token/.test(
+      text,
+    ) ||
+    /credential is missing|api credential|invalid credential/.test(text) ||
+    /run agy(?: once)? to sign in|please sign in|sign in again/.test(text)
+  );
+}
+
 function isCredential(
   text: string,
   base: Classification,
   status: number | undefined,
   provider: RuntimeProvider,
 ): boolean {
+  if (provider === "antigravity") return isAntigravityAuthDiagnostic(text);
   if (
     status === 401 ||
     status === 403 ||
@@ -620,14 +634,6 @@ function isCredential(
   // "not logged in" / "grok login" / "auth.json" carry no generic auth token
   // the shared classifier already covers, so they need a grok-only branch.
   if (provider === "grok" && /not logged in|grok login|auth\.json/.test(text)) return true;
-  // Antigravity headless auth failures are provider-owned and may mention a
-  // credential without using the generic "authentication required" wording.
-  if (
-    provider === "antigravity" &&
-    /gemini_api_key|credential|sign in|token (?:is )?(?:missing|expired)|invalid token/.test(text)
-  ) {
-    return true;
-  }
   // Pi CLI logged-out / missing-key phrasings (kept in sync with isPiAuthError).
   return (
     provider === "pi" &&

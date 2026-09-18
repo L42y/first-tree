@@ -421,6 +421,18 @@ describe("classifyProviderFailure", () => {
       source: "session",
     });
     expect(platform).toMatchObject({ category: "capability", reasonCode: "antigravity_platform_unsupported" });
+
+    const review = classifyProviderFailure(
+      new Error(
+        [
+          "Reviewed successor head 03e8f42a4721630f3c15dd28f6754a342460ec27 on PR #3881 across two full sweeps: clean verdict with zero real findings.",
+          "",
+          "Previous Finding Resolved: Listing bed feature promotion now strictly keeps the sign in CTA.",
+        ].join("\n"),
+      ),
+      { provider: "antigravity", scope: "provider_turn", source: "stream" },
+    );
+    expect(review.category).toBe("unknown");
   });
 
   it("classifies Pi credential phrasings as needs_operator and does not unknown-retry them", () => {

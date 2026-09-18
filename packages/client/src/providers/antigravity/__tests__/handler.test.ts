@@ -1038,6 +1038,61 @@ process.stdin.on("end", () => {
     await handler.shutdown();
   });
 
+  it("does not treat an ERROR review body that mentions sign-in as a credential failure", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-review-error-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const report = [
+      "Reviewed successor head 03e8f42a4721630f3c15dd28f6754a342460ec27 on PR #3881 across two full sweeps: clean verdict with zero real findings.",
+      "",
+      "Previous Finding Resolved: Listing bed feature promotion now strictly keeps the sign in CTA.",
+    ].join("\n");
+    const output = [
+      JSON.stringify({ event: "init", conversation_id: "conversation-review" }),
+      JSON.stringify({
+        event: "result",
+        result: {
+          conversation_id: "conversation-review",
+          status: "ERROR",
+          response: "",
+          error: report,
+        },
+      }),
+    ];
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(specs, inputs, output, [], [true], 1),
+      antigravityTurnTimeoutMs: 5_000,
+    });
+    const token = deliveryToken();
+
+    await handler.start(message("m-review", "review the PR"), sessionCtx, token);
+
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: "error", completion: "consumed" }),
+    );
+    expect(forwarded).toEqual([]);
+    const retryEvents = events.flatMap((event) => {
+      const { kind, payload } = event as { kind?: unknown; payload?: { message?: unknown } };
+      if (kind !== "error" || typeof payload?.message !== "string") return [];
+      const parsed = parseProviderRetryEventMessage(payload.message);
+      return parsed ? [parsed] : [];
+    });
+    expect(retryEvents.some((event) => event.category === "credential")).toBe(false);
+    expect(JSON.stringify(events)).not.toContain("run agy once to sign in");
+    await handler.shutdown();
+  });
+
   it("routes a pre-provider timeout through retry settlement", async () => {
     const root = mkdtempSync(join(tmpdir(), "ft-antigravity-pre-provider-timeout-"));
     roots.push(root);
