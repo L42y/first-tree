@@ -924,7 +924,7 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
           });
           if (
             isAntigravityRuntimeFailureCategory(classification.category) ||
-            !looksLikeAgentAuthoredReport(providerErrorText)
+            !looksLikeNoOpWebhookReport(providerErrorText)
           ) {
             protocolErrors.push(providerErrorText);
           } else {
@@ -1375,7 +1375,7 @@ function isReadOnlyTool(name: string): boolean {
   );
 }
 
-/** Runtime classes that must remain terminal. Unknown ERROR bodies can be the agent's report. */
+/** Runtime classes that must remain terminal. Unknown ERROR bodies stay failures. */
 function isAntigravityRuntimeFailureCategory(category: string): boolean {
   return (
     category === "credential" ||
@@ -1388,14 +1388,15 @@ function isAntigravityRuntimeFailureCategory(category: string): boolean {
   );
 }
 
-function looksLikeAgentAuthoredReport(text: string): boolean {
+/** Positive evidence for the no-op webhook compatibility case; length/newlines are not enough. */
+function looksLikeNoOpWebhookReport(text: string): boolean {
   const body = text
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0 && !/^antigravity returned (status |an error result)/i.test(line))
     .join("\n");
   if (!body) return false;
-  return body.includes("\n") || body.length >= 40;
+  return /no-op webhook event on (?:pr|issue) #\d+/i.test(body);
 }
 
 export type { AntigravityMcpConfig };
