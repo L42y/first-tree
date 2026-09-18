@@ -1503,12 +1503,18 @@ process.stdin.on("end", () => {
             }),
           ],
           [],
-          [],
+          [
+            JSON.stringify({ event: "init", conversation_id: "conversation-b" }),
+            JSON.stringify({
+              event: "result",
+              result: { conversation_id: "conversation-b", status: "SUCCESS", response: "recovered" },
+            }),
+          ],
         ],
-        [true, false, false],
+        [true, false, true],
         0,
         [],
-        [[], [stderr], [stderr]],
+        [[], [stderr], []],
       ),
       antigravityTurnTimeoutMs: 5_000,
       antigravityRetrySleep: retrySleep,
@@ -1523,8 +1529,44 @@ process.stdin.on("end", () => {
     await vi.waitFor(() => expect(specs.length).toBeGreaterThanOrEqual(3), { timeout: 3_000 });
 
     expect(specs[2]?.args).not.toContain("conversation-a");
-    expect(JSON.stringify(events)).toContain("No capacity available");
+    await vi.waitFor(() => expect(retryToken.complete).toHaveBeenCalledWith(expect.anything(), { status: "success" }));
+    expect(sessionCtx.replaceSessionId).toHaveBeenCalledWith("conversation-b", "antigravity_conversation_id_confirmed");
+    expect(forwarded).toEqual(["first", "recovered"]);
     await handler.shutdown();
+
+    const coldSpecs: ProviderProcessSpec[] = [];
+    const coldInputs: string[] = [];
+    const coldEvents: unknown[] = [];
+    const coldForwarded: string[] = [];
+    const coldCtx = context(coldEvents, coldForwarded);
+    const cold = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(
+        coldSpecs,
+        coldInputs,
+        [
+          JSON.stringify({ event: "init", conversation_id: "conversation-b" }),
+          JSON.stringify({
+            event: "result",
+            result: { conversation_id: "conversation-b", status: "SUCCESS", response: "after-restart" },
+          }),
+        ],
+        [],
+        [true],
+      ),
+      antigravityTurnTimeoutMs: 5_000,
+    });
+    const coldToken = deliveryToken();
+    await cold.resume(message("m3", "after restart"), "conversation-b", coldCtx, coldToken);
+    expect(coldSpecs[0]?.args).toContain("conversation-b");
+    expect(coldSpecs[0]?.args).not.toContain("conversation-a");
+    expect(coldToken.complete).toHaveBeenCalledWith(expect.anything(), { status: "success" });
+    expect(coldForwarded).toEqual(["after-restart"]);
+    await cold.shutdown();
   });
 
   it("fails closed when a resumed turn returns a different conversation id", async () => {

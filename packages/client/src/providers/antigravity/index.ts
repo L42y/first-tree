@@ -271,6 +271,7 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
   let binary: string | null = null;
   let providerSessionId: string | null = null;
   let pendingSyntheticId: string | null = null;
+  let droppedSessionId: string | null = null;
   // A lifecycle fence can finish an in-flight first turn after shutdown has
   // cleared the live handler state. Keep an exact provider ID just long
   // enough for start()/resume() to return it to SessionRuntime.
@@ -610,13 +611,14 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
 
   function adoptSessionId(sessionCtx: SessionContext, id: string): void {
     if (providerSessionId === id) return;
-    const synthetic = pendingSyntheticId;
+    const previous = providerSessionId ?? pendingSyntheticId ?? droppedSessionId;
     providerSessionId = id;
-    if (synthetic) {
-      pendingSyntheticId = null;
+    pendingSyntheticId = null;
+    droppedSessionId = null;
+    if (previous && previous !== id) {
       sessionCtx.replaceSessionId?.(id, "antigravity_conversation_id_confirmed");
       if (cwd) {
-        const baseline = readSessionBriefingFingerprint(cwd, synthetic);
+        const baseline = readSessionBriefingFingerprint(cwd, previous);
         if (baseline) writeSessionBriefingFingerprint(cwd, id, baseline);
       }
     }
@@ -906,7 +908,9 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
         const capacityDiagnostic = antigravityCapacityDiagnostic([outcome.stderrTail, ...state.errors].join("\n"));
         if (capacityDiagnostic && !state.sawUnsafeTool && state.results.length === 0) {
           // Drop an already-established conversation so the capacity retry
-          // cannot spawn `--conversation` for the same 503 cascade.
+          // cannot spawn `--conversation` for the same 503 cascade. Remember
+          // it so a later successful replacement can update SessionRuntime.
+          droppedSessionId = providerSessionId ?? droppedSessionId;
           providerSessionId = null;
           pendingLifecycleSessionId = null;
           return settleFailure({
@@ -1400,6 +1404,7 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
       binary = null;
       providerSessionId = null;
       pendingSyntheticId = null;
+      droppedSessionId = null;
       ambiguousProviderTurnKeys.clear();
       pendingChatContextPrompt = null;
       cumulativeUsageByConversation.clear();
