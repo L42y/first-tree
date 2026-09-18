@@ -905,7 +905,8 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
         }
         const capacityDiagnostic = antigravityCapacityDiagnostic([outcome.stderrTail, ...state.errors].join("\n"));
         if (capacityDiagnostic && !state.sawUnsafeTool && state.results.length === 0) {
-          adoptObservedSessionId(sessionCtx, state.sessionIds, expectedSessionId, state.usage);
+          // Do not keep the conversation id: resuming the same cascade would
+          // sit in agy's internal 503 retry loop again.
           return settleFailure({
             failure: capacityDiagnostic,
             state: { sawProviderActivity: false, sawUnsafeTool: false, text: [] },
