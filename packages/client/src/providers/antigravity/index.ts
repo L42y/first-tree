@@ -527,7 +527,6 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
         state.results.push({ isError: event.isError, text: event.text });
         if (event.sessionId) state.sessionIds.add(event.sessionId);
         if (event.usage) state.usage = event.usage;
-        if (event.isError && event.text) state.errors.push(event.text);
         break;
       case "error":
         state.errors.push(event.message);
@@ -949,10 +948,11 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
           protocolErrors.push("Antigravity returned an ERROR result");
         }
 
+        const deliveredResult = state.results.length === 1 && !state.results[0]?.isError;
         const success =
           !outcome.spawnError &&
           protocolErrors.length === 0 &&
-          (outcome.exitCode === 0 || (agentAuthoredError && outcome.exitCode !== null));
+          (outcome.exitCode === 0 || ((agentAuthoredError || deliveredResult) && outcome.exitCode !== null));
         if (success) {
           const id = ids[0];
           if (!id) throw new Error("Antigravity success without conversation ID");

@@ -105,6 +105,33 @@ describe("Antigravity stream-json parser", () => {
     expect(
       parseAntigravityStreamLine('14:50 0:00 /bin/bash -O extglob -c snap=$(command cat <&3); builtin eval -- "$snap"'),
     ).toMatchObject([{ kind: "noise" }]);
+    expect(
+      parseAntigravityStreamLine(
+        JSON.stringify({
+          event: "result",
+          result: { conversation_id: "c", status: "ERROR", response: "Checking PR #3935 status on GitHub." },
+        }),
+      ),
+    ).toEqual([
+      {
+        kind: "result",
+        isError: false,
+        text: "Checking PR #3935 status on GitHub.",
+        sessionId: "c",
+        usage: null,
+      },
+    ]);
+    expect(
+      parseAntigravityStreamLine(
+        JSON.stringify({
+          event: "step_update",
+          step_update: { conversation_id: "c", step_type: "error_message", text_delta: "tool warning" },
+        }),
+      ),
+    ).toMatchObject([
+      { kind: "init", sessionId: "c" },
+      { kind: "assistant_delta", text: "tool warning" },
+    ]);
     expect(parseAntigravityStreamLine(JSON.stringify({ event: "future_event" }))).toMatchObject([{ kind: "unknown" }]);
     expect(
       parseAntigravityStreamLine(

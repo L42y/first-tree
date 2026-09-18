@@ -413,7 +413,7 @@ process.stdin.on("end", () => {
   JSON.parse(input.trim());
   process.stdout.write(JSON.stringify({event:"init",conversation_id:conversationId}) + "\\n");
   if (turn === 0) {
-    process.stdout.write(JSON.stringify({event:"result",result:{conversation_id:conversationId,status:"ERROR",response:"failed",usage:{input_tokens:3,cache_read_tokens:1,output_tokens:2}}}) + "\\n");
+    process.stdout.write(JSON.stringify({event:"result",result:{conversation_id:conversationId,status:"ERROR",response:"",error:"failed",usage:{input_tokens:3,cache_read_tokens:1,output_tokens:2}}}) + "\\n");
     process.exitCode = 1;
     return;
   }
@@ -1089,6 +1089,47 @@ process.stdin.on("end", () => {
       return parsed ? [parsed] : [];
     });
     expect(retryEvents.some((event) => event.category === "credential")).toBe(false);
+    expect(JSON.stringify(events)).not.toContain("run agy once to sign in");
+    await handler.shutdown();
+  });
+
+  it("delivers status ERROR with a response body and no diagnostic as the turn", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-error-response-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const report = "Checking PR #3935 status on GitHub.\nPR #3935 Landed on main.";
+    const output = [
+      JSON.stringify({ event: "init", conversation_id: "conversation-error-response" }),
+      JSON.stringify({
+        event: "result",
+        result: {
+          conversation_id: "conversation-error-response",
+          status: "ERROR",
+          response: report,
+        },
+      }),
+    ];
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(specs, inputs, output, [], [true], 1),
+      antigravityTurnTimeoutMs: 5_000,
+    });
+    const token = deliveryToken();
+
+    await handler.start(message("m-error-response", "check the PRs"), sessionCtx, token);
+
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(expect.anything(), { status: "success" });
+    expect(forwarded).toEqual([report]);
+    expect(providerRetryEventNames(events)).toEqual([]);
     expect(JSON.stringify(events)).not.toContain("run agy once to sign in");
     await handler.shutdown();
   });
