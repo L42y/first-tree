@@ -1272,7 +1272,7 @@ process.stdin.on("end", () => {
     await handler.shutdown();
   });
 
-  it("delivers assistant text obtained before a turn timeout", async () => {
+  it("surfaces timed-out progress without acknowledging a successful turn", async () => {
     const root = mkdtempSync(join(tmpdir(), "ft-antigravity-timeout-text-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
@@ -1280,7 +1280,7 @@ process.stdin.on("end", () => {
     const events: unknown[] = [];
     const forwarded: string[] = [];
     const sessionCtx = context(events, forwarded);
-    const report = "Waiting for PR status check to complete.";
+    const report = "I will apply the migration, then verify its result.";
     const output = [
       JSON.stringify({ event: "init", conversation_id: "conversation-timeout-text" }),
       JSON.stringify({
@@ -1289,6 +1289,17 @@ process.stdin.on("end", () => {
           conversation_id: "conversation-timeout-text",
           step_type: "agent_response",
           text_delta: report,
+        },
+      }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          conversation_id: "conversation-timeout-text",
+          state: "ACTIVE",
+          step_type: "tool",
+          tool_name: "run_command",
+          tool_call_id: "call-1",
+          tool_info: { parameters: { command: "apply-migration" } },
         },
       }),
     ];
@@ -1303,12 +1314,74 @@ process.stdin.on("end", () => {
     });
     const token = deliveryToken();
 
-    await handler.start(message("m-timeout-text", "check the PR"), sessionCtx, token);
+    await handler.start(message("m-timeout-text", "apply the migration"), sessionCtx, token);
 
     expect(token.retry).not.toHaveBeenCalled();
-    expect(token.complete).toHaveBeenCalledWith(expect.anything(), { status: "success" });
-    expect(forwarded).toEqual([report]);
+    expect(token.complete).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: "error", completion: "consumed", reason: "unsafe_replay" }),
+    );
+    expect(forwarded).toEqual([]);
+    expect(JSON.stringify(events)).toContain(report);
     expect(JSON.stringify(events)).not.toContain("after retrying a transient provider or network failure");
+    await handler.shutdown();
+  });
+
+  it("keeps the expected conversation when a timed-out resume emits a different id", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-timeout-mismatch-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(
+        specs,
+        inputs,
+        [],
+        [
+          [
+            JSON.stringify({ event: "init", conversation_id: "conversation-a" }),
+            JSON.stringify({
+              event: "result",
+              result: { conversation_id: "conversation-a", status: "SUCCESS", response: "first" },
+            }),
+          ],
+          [
+            JSON.stringify({ event: "init", conversation_id: "conversation-b" }),
+            JSON.stringify({
+              event: "step_update",
+              step_update: {
+                conversation_id: "conversation-b",
+                step_type: "agent_response",
+                text_delta: "from the wrong conversation",
+              },
+            }),
+          ],
+        ],
+        [true, false],
+      ),
+      antigravityTurnTimeoutMs: 50,
+    });
+
+    const first = await handler.start(message("m1", "first prompt"), sessionCtx, deliveryToken());
+    expect(first.sessionId).toBe("conversation-a");
+    const secondToken = deliveryToken();
+    const second = await handler.resume(message("m2", "follow-up"), "conversation-a", sessionCtx, secondToken);
+
+    expect(second.sessionId).toBe("conversation-a");
+    expect(secondToken.retry).not.toHaveBeenCalled();
+    expect(secondToken.complete).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: "error", completion: "consumed", reason: "unsafe_replay" }),
+    );
+    expect(forwarded).toEqual(["first"]);
     await handler.shutdown();
   });
 

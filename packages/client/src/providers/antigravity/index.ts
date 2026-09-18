@@ -889,52 +889,14 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
         if (abort.signal.aborted) {
           // Timeout after the prompt was written is not a transport blip:
           // Antigravity cannot resume, and TimeoutError would retry as
-          // transient network. Deliver output already obtained; otherwise
-          // fail closed without a TimeoutError name.
+          // transient network. Surface any partial text, but keep an
+          // incomplete/error outcome and the expected conversation identity.
           adoptObservedSessionId(sessionCtx, state.sessionIds, expectedSessionId, state.usage);
-          const ids = [...state.sessionIds];
           const finalText = (state.results[0]?.text || state.text.join("")).trim();
-          const diagnosticFailure = Boolean(state.results[0]?.isError) || state.errors.length > 0;
-          if (ids.length === 1 && finalText && !diagnosticFailure) {
-            const id = ids[0];
-            if (!id) throw new Error("Antigravity timeout delivery without conversation ID");
-            adoptSessionId(sessionCtx, id);
-            if (!expectedSessionId) freshConversations.add(id);
+          if (finalText) {
             for (const chunk of chunkAssistantText(finalText)) {
               sessionCtx.emitEvent({ kind: "assistant_text", payload: { text: chunk } });
             }
-            if (state.usage) emitAntigravityUsage(sessionCtx, payload, id, state.usage);
-            try {
-              await sessionCtx.forwardResult(finalText);
-            } catch (error) {
-              sessionCtx.emitEvent({
-                kind: "error",
-                payload: {
-                  source: "runtime",
-                  message: `forwardResult failed: ${error instanceof Error ? error.message : String(error)}`.slice(
-                    0,
-                    2000,
-                  ),
-                },
-              });
-              sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
-              const completion = await token.complete(messages, {
-                status: "error",
-                completion: "consumed",
-                reason: "forward_failed",
-              });
-              if (completion === "retry") return false;
-              providerTurnFailureAttempts.delete(providerAttemptKey(sessionCtx, messages));
-              pendingChatContextPrompt = null;
-              return true;
-            }
-            sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "success" } });
-            const completion = await token.complete(messages, { status: "success" });
-            if (completion === "retry") return false;
-            providerTurnFailureAttempts.delete(providerAttemptKey(sessionCtx, messages));
-            if (pendingChatContextPrompt === oneShotPrompt) pendingChatContextPrompt = null;
-            writeSessionBriefingFingerprint(workspaceCwd, id, computeBriefingFingerprint(briefing));
-            return true;
           }
           const abortError = new Error("Antigravity turn aborted or timed out before a safe terminal event");
           return settleFailure({
