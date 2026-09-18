@@ -922,14 +922,17 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
             scope: "provider_turn",
             source: "stream",
           });
+          const result = state.results[0];
           if (
             isAntigravityRuntimeFailureCategory(classification.category) ||
-            !looksLikeNoOpWebhookReport(providerErrorText)
+            !shouldDeliverUnknownAntigravityError({
+              providerErrorText,
+              streamedAssistant: state.text.some((chunk) => chunk.trim().length > 0),
+            })
           ) {
             protocolErrors.push(providerErrorText);
           } else {
             agentAuthoredError = true;
-            const result = state.results[0];
             if (result && !result.text.trim()) result.text = providerErrorText;
           }
         } else if (state.errors.length > 0) {
@@ -1375,7 +1378,7 @@ function isReadOnlyTool(name: string): boolean {
   );
 }
 
-/** Runtime classes that must remain terminal. Unknown ERROR bodies stay failures. */
+/** Runtime classes that must remain terminal. Unknown ERROR bodies stay failures unless positively a turn. */
 function isAntigravityRuntimeFailureCategory(category: string): boolean {
   return (
     category === "credential" ||
@@ -1397,6 +1400,19 @@ function looksLikeNoOpWebhookReport(text: string): boolean {
     .join("\n");
   if (!body) return false;
   return /no-op webhook event on (?:pr|issue) #\d+/i.test(body);
+}
+
+/**
+ * Unknown ERROR can be the agent's mid-turn output. Deliver it only with
+ * stream evidence (assistant_delta already observed) or the no-op webhook
+ * report. Empty-response diagnostics with no assistant stream stay failures.
+ */
+function shouldDeliverUnknownAntigravityError(input: {
+  providerErrorText: string;
+  streamedAssistant: boolean;
+}): boolean {
+  if (looksLikeNoOpWebhookReport(input.providerErrorText)) return true;
+  return input.streamedAssistant;
 }
 
 export type { AntigravityMcpConfig };

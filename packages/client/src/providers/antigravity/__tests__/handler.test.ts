@@ -1093,6 +1093,58 @@ process.stdin.on("end", () => {
     await handler.shutdown();
   });
 
+  it("delivers a mid-turn ERROR response body as the turn", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-mid-turn-error-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const report = [
+      "Checking PR #3935 status on GitHub.",
+      "Checking PR 3926 details.",
+      "### PR #3935 Merged & Next Steps",
+      "PR #3935 Landed on main.",
+    ].join("\n");
+    const output = [
+      JSON.stringify({ event: "init", conversation_id: "conversation-mid" }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: { conversation_id: "conversation-mid", step_type: "agent_response", text_delta: report },
+      }),
+      JSON.stringify({
+        event: "result",
+        result: {
+          conversation_id: "conversation-mid",
+          status: "ERROR",
+          response: report,
+          error: "",
+        },
+      }),
+    ];
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(specs, inputs, output, [], [true], 1),
+      antigravityTurnTimeoutMs: 5_000,
+    });
+    const token = deliveryToken();
+
+    await handler.start(message("m-mid", "check the PRs"), sessionCtx, token);
+
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(expect.anything(), { status: "success" });
+    expect(forwarded).toEqual([report]);
+    expect(providerRetryEventNames(events)).toEqual([]);
+    expect(JSON.stringify(events)).not.toContain("run agy once to sign in");
+    expect(JSON.stringify(events)).not.toContain("unknown terminal failure");
+    await handler.shutdown();
+  });
+
   it("routes a pre-provider timeout through retry settlement", async () => {
     const root = mkdtempSync(join(tmpdir(), "ft-antigravity-pre-provider-timeout-"));
     roots.push(root);
