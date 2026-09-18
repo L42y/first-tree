@@ -1,5 +1,16 @@
-import { describe, expect, it } from "vitest";
-import { discoverAntigravityModels, parseAntigravityModelsOutput } from "../discover-models.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  ANTIGRAVITY_MODELS_BUDGET_MS,
+  discoverAntigravityModels,
+  parseAntigravityModelsOutput,
+} from "../discover-models.js";
+
+/** Mirrors `DEFAULT_CLIENT_REPLY_TIMEOUT_MS` on the model-catalog waiter. */
+const SERVER_CATALOG_DEADLINE_MS = 25_000;
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("parseAntigravityModelsOutput", () => {
   it("parses documented slug/label rows", () => {
@@ -75,5 +86,88 @@ describe("discoverAntigravityModels", () => {
     });
     expect(catalog.source).toBe("unavailable");
     expect(catalog.error).toContain("no parseable model rows");
+  });
+
+  it("does not start a text fallback after JSON spends the shared budget", async () => {
+    vi.useFakeTimers();
+    const started = Date.now();
+    const calls: string[][] = [];
+    const catalogPromise = discoverAntigravityModels({
+      resolveAntigravityBinary: () => ({ ok: true, binary: "/fake/bin/agy" }),
+      runAntigravityModelsCommand: async (_bin, args, opts) => {
+        calls.push([...args]);
+        expect(opts.timeoutMs).toBe(ANTIGRAVITY_MODELS_BUDGET_MS);
+        await vi.advanceTimersByTimeAsync(ANTIGRAVITY_MODELS_BUDGET_MS);
+        return {
+          ok: false,
+          stdout: "",
+          stderr: "json timed out",
+          timedOut: true,
+          durationMs: ANTIGRAVITY_MODELS_BUDGET_MS,
+        };
+      },
+    });
+    const catalog = await catalogPromise;
+    expect(calls).toEqual([["models", "--output-format", "json"]]);
+    expect(catalog.source).toBe("unavailable");
+    expect(catalog.models).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(SERVER_CATALOG_DEADLINE_MS);
+  });
+
+  it("keeps an immediate JSON rejection plus text lookup inside the server catalog deadline", async () => {
+    vi.useFakeTimers();
+    const started = Date.now();
+    const catalogPromise = discoverAntigravityModels({
+      resolveAntigravityBinary: () => ({ ok: true, binary: "/fake/bin/agy" }),
+      runAntigravityModelsCommand: async (_bin, args, opts) => {
+        if (args.includes("--output-format")) {
+          expect(opts.timeoutMs).toBe(ANTIGRAVITY_MODELS_BUDGET_MS);
+          return { ok: false, stdout: "", stderr: "unknown flag", timedOut: false, durationMs: 0 };
+        }
+        expect(opts.timeoutMs).toBe(ANTIGRAVITY_MODELS_BUDGET_MS);
+        await vi.advanceTimersByTimeAsync(6_000);
+        return {
+          ok: true,
+          stdout: "gemini-3.8-flash-high     Gemini 3.8 Flash (High)\n",
+          stderr: "",
+          timedOut: false,
+          durationMs: 6_000,
+        };
+      },
+    });
+    const catalog = await catalogPromise;
+    expect(Date.now() - started).toBe(6_000);
+    expect(Date.now() - started).toBeLessThan(SERVER_CATALOG_DEADLINE_MS);
+    expect(catalog.source).toBe("provider-cli");
+    expect(catalog.models).toEqual([{ id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)" }]);
+  });
+
+  it("gives the text fallback only the remaining shared budget", async () => {
+    vi.useFakeTimers();
+    const started = Date.now();
+    const timeouts: number[] = [];
+    const catalogPromise = discoverAntigravityModels({
+      resolveAntigravityBinary: () => ({ ok: true, binary: "/fake/bin/agy" }),
+      runAntigravityModelsCommand: async (_bin, args, opts) => {
+        timeouts.push(opts.timeoutMs);
+        if (args.includes("--output-format")) {
+          await vi.advanceTimersByTimeAsync(5_000);
+          return { ok: false, stdout: "{}", stderr: "", timedOut: false, durationMs: 5_000 };
+        }
+        await vi.advanceTimersByTimeAsync(6_000);
+        return {
+          ok: true,
+          stdout: "gemini-3.8-flash-high     Gemini 3.8 Flash (High)\n",
+          stderr: "",
+          timedOut: false,
+          durationMs: 6_000,
+        };
+      },
+    });
+    const catalog = await catalogPromise;
+    expect(timeouts).toEqual([ANTIGRAVITY_MODELS_BUDGET_MS, ANTIGRAVITY_MODELS_BUDGET_MS - 5_000]);
+    expect(Date.now() - started).toBe(11_000);
+    expect(Date.now() - started).toBeLessThan(SERVER_CATALOG_DEADLINE_MS);
+    expect(catalog.source).toBe("provider-cli");
   });
 });

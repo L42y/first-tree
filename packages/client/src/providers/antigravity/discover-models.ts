@@ -2,8 +2,20 @@ import type { ProviderModelCatalog, ProviderModelOption } from "@first-tree/shar
 import { runCommand } from "../capabilities/launch-probe.js";
 import { resolveAntigravityRuntimeBinary } from "./binary.js";
 
-/** Ceiling for `agy models` — the account catalog fetch can be network-bound. */
-const ANTIGRAVITY_MODELS_TIMEOUT_MS = 20_000;
+/**
+ * Shared budget for `agy models` JSON + text fallback. Must stay below the
+ * server's `waitForClientReply` default (25s) so a valid fallback can still
+ * reach the picker.
+ */
+export const ANTIGRAVITY_MODELS_BUDGET_MS = 20_000;
+
+export type AntigravityModelsCommandResult = {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  timedOut?: boolean;
+  durationMs?: number;
+};
 
 export type AntigravityDiscoverModelsDeps = {
   env?: NodeJS.ProcessEnv;
@@ -13,6 +25,11 @@ export type AntigravityDiscoverModelsDeps = {
     binary: string,
     env: NodeJS.ProcessEnv,
   ) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
+  runAntigravityModelsCommand?: (
+    binary: string,
+    args: string[],
+    opts: { timeoutMs: number; env: NodeJS.ProcessEnv },
+  ) => Promise<AntigravityModelsCommandResult>;
 };
 
 function fetchedAt(deps: { now?: () => Date }): string {
@@ -150,6 +167,45 @@ export function parseAntigravityModelsOutput(stdout: string): {
   return { models, defaultModelId };
 }
 
+async function runAntigravityModelsWithBudget(
+  binary: string,
+  env: NodeJS.ProcessEnv,
+  deps: AntigravityDiscoverModelsDeps,
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  const nowMs = () => (deps.now ?? (() => new Date()))().getTime();
+  const deadlineMs = nowMs() + ANTIGRAVITY_MODELS_BUDGET_MS;
+  const remainingMs = () => Math.max(0, deadlineMs - nowMs());
+  const run =
+    deps.runAntigravityModelsCommand ??
+    (async (bin, args, opts) => {
+      const result = await runCommand(bin, args, { timeoutMs: opts.timeoutMs, env: opts.env });
+      return {
+        ok: result.ok,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        timedOut: result.timedOut,
+        durationMs: result.durationMs,
+      };
+    });
+
+  const jsonTimeoutMs = remainingMs();
+  if (jsonTimeoutMs <= 0) {
+    return { ok: false, stdout: "", stderr: "agy models budget exhausted" };
+  }
+  const json = await run(binary, ["models", "--output-format", "json"], { timeoutMs: jsonTimeoutMs, env });
+  if (json.ok && parseAntigravityModelsOutput(json.stdout).models.length > 0) {
+    return { ok: true, stdout: json.stdout, stderr: json.stderr };
+  }
+  // A timed-out JSON probe already spent the budget; retrying text would
+  // miss the server's 25s catalog waiter.
+  if (json.timedOut || remainingMs() <= 0) {
+    const detail = (json.stderr || json.stdout || "agy models json timed out").trim();
+    return { ok: false, stdout: json.stdout, stderr: detail };
+  }
+  const text = await run(binary, ["models"], { timeoutMs: remainingMs(), env });
+  return { ok: text.ok, stdout: text.stdout, stderr: text.stderr };
+}
+
 export async function discoverAntigravityModels(
   deps: AntigravityDiscoverModelsDeps = {},
 ): Promise<ProviderModelCatalog> {
@@ -159,22 +215,7 @@ export async function discoverAntigravityModels(
   if (!resolution.ok) {
     return unavailableCatalog(resolution.error.slice(0, 500), deps);
   }
-  const run =
-    deps.runAntigravityModels ??
-    (async (bin, processEnv) => {
-      const json = await runCommand(bin, ["models", "--output-format", "json"], {
-        timeoutMs: ANTIGRAVITY_MODELS_TIMEOUT_MS,
-        env: processEnv,
-      });
-      if (json.ok && parseAntigravityModelsOutput(json.stdout).models.length > 0) {
-        return { ok: true, stdout: json.stdout, stderr: json.stderr };
-      }
-      const text = await runCommand(bin, ["models"], {
-        timeoutMs: ANTIGRAVITY_MODELS_TIMEOUT_MS,
-        env: processEnv,
-      });
-      return { ok: text.ok, stdout: text.stdout, stderr: text.stderr };
-    });
+  const run = deps.runAntigravityModels ?? ((bin, processEnv) => runAntigravityModelsWithBudget(bin, processEnv, deps));
   const result = await run(resolution.binary, env);
   if (!result.ok) {
     const detail = (result.stderr || result.stdout || "agy models failed").trim();
