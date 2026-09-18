@@ -207,6 +207,7 @@ function createControlledSupervisor(
   outputLinesByTurn: readonly (readonly string[])[] = [],
   closeAfterTurn: readonly boolean[] = [],
   closeExitCode = 0,
+  stderrLines: readonly string[] = [],
 ): ProviderProcessSupervisor {
   let turn = 0;
   return {
@@ -250,6 +251,7 @@ function createControlledSupervisor(
       }) as typeof stdin.write;
       setImmediate(() => {
         for (const line of currentOutputLines) stdout.write(`${line}\n`);
+        for (const line of stderrLines) stderr.write(`${line}\n`);
         if (shouldCloseAfterOutput) complete();
       });
       return { child, exited: new Promise<void>((resolve) => child.once("close", () => resolve())) };
@@ -1236,6 +1238,36 @@ process.stdin.on("end", () => {
     expect(providerRetryEventNames(events)).toEqual([]);
     expect(JSON.stringify(events)).not.toContain("run agy once to sign in");
     expect(JSON.stringify(events)).not.toContain("unknown terminal failure");
+    await handler.shutdown();
+  });
+
+  it("stops waiting when agy reports no model capacity instead of timing out as a crash", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-no-capacity-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const retrySleep = vi.fn(async () => true);
+    const stderr = "UNAVAILABLE (code 503): No capacity available for model gemini-3.8-flash-high on the server";
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(specs, inputs, [], [], [], 0, [stderr]),
+      antigravityTurnTimeoutMs: 5_000,
+      antigravityRetrySleep: retrySleep,
+    });
+    const token = deliveryToken();
+
+    await handler.start(message("m-capacity", "review the PR"), sessionCtx, token);
+
+    expect(JSON.stringify(events)).toContain("No capacity available");
+    expect(JSON.stringify(events)).not.toContain("after retrying a transient provider or network failure");
+    expect(forwarded).toEqual([]);
     await handler.shutdown();
   });
 

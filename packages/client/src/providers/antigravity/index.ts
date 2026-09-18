@@ -67,6 +67,17 @@ const STDERR_TAIL_LIMIT = 8_000;
 const DEFAULT_TURN_TIMEOUT_MS = 20 * 60_000;
 const KILL_GRACE_MS = 5_000;
 const FINAL_CLOSE_WAIT_MS = 2_000;
+const ANTIGRAVITY_CAPACITY_RE = /no capacity available|resource_exhausted|individual quota reached/i;
+
+function antigravityCapacityDiagnostic(text: string): string | null {
+  if (!ANTIGRAVITY_CAPACITY_RE.test(text)) return null;
+  const line = text
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => ANTIGRAVITY_CAPACITY_RE.test(entry));
+  return line || text.trim().slice(0, 500);
+}
+
 const PROVIDER_ATTEMPT_WINDOW_TTL_MS = 30 * 60_000;
 const MAX_PROVIDER_ATTEMPT_WINDOWS = 512;
 
@@ -462,6 +473,9 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
       child.stderr?.setEncoding("utf8");
       child.stderr?.on("data", (chunk: string) => {
         stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_LIMIT);
+        if (antigravityCapacityDiagnostic(chunk) && !input.abortSignal.aborted) {
+          terminate();
+        }
       });
       child.on("close", (exitCode, signal) => {
         input.abortSignal.removeEventListener("abort", terminate);
@@ -888,6 +902,18 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
           const lifecycleRecoveryReason = drainCancellationReason ?? "antigravity_turn_aborted_or_timed_out";
           token.retry(messages, lifecycleRecoveryReason);
           return false;
+        }
+        const capacityDiagnostic = antigravityCapacityDiagnostic([outcome.stderrTail, ...state.errors].join("\n"));
+        if (capacityDiagnostic && !state.sawUnsafeTool && state.results.length === 0) {
+          adoptObservedSessionId(sessionCtx, state.sessionIds, expectedSessionId, state.usage);
+          return settleFailure({
+            failure: capacityDiagnostic,
+            state: { sawProviderActivity: false, sawUnsafeTool: false, text: [] },
+            sessionCtx,
+            messages,
+            token,
+            turnGeneration,
+          });
         }
         if (abort.signal.aborted) {
           // Timeout after the prompt was written is not a transport blip:
