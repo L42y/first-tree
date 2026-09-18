@@ -29,6 +29,7 @@ import type {
 import {
   assertContextSourceCurrent,
   buildBriefingUpdateNotice,
+  classifyProviderFailure,
   computeBriefingFingerprint,
   contextSourceFromHandlerConfig,
   createDefaultProviderProcessSupervisor,
@@ -913,7 +914,27 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
         if (state.results.length !== 1) {
           protocolErrors.push(`expected one terminal result event, observed ${state.results.length}`);
         }
-        if (state.errors.length > 0) protocolErrors.push(...state.errors);
+        const providerErrorText = state.errors.join("\n").trim();
+        let agentAuthoredError = false;
+        if (providerErrorText && state.results.length === 1 && ids.length === 1) {
+          const classification = classifyProviderFailure(new Error(providerErrorText), {
+            provider: runtimeProvider,
+            scope: "provider_turn",
+            source: "stream",
+          });
+          if (
+            isAntigravityRuntimeFailureCategory(classification.category) ||
+            !looksLikeAgentAuthoredReport(providerErrorText)
+          ) {
+            protocolErrors.push(providerErrorText);
+          } else {
+            agentAuthoredError = true;
+            const result = state.results[0];
+            if (result && !result.text.trim()) result.text = providerErrorText;
+          }
+        } else if (state.errors.length > 0) {
+          protocolErrors.push(...state.errors);
+        }
         if (state.protocolDiagnostics.length > 0 && state.results.length !== 1) {
           protocolErrors.push(
             `unsupported or malformed Antigravity stream (${state.protocolDiagnostics.length} line${
@@ -921,11 +942,14 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
             })`,
           );
         }
-        if (state.results[0]?.isError && state.errors.length === 0) {
+        if (state.results[0]?.isError && state.errors.length === 0 && !agentAuthoredError) {
           protocolErrors.push("Antigravity returned an ERROR result");
         }
 
-        const success = !outcome.spawnError && outcome.exitCode === 0 && protocolErrors.length === 0;
+        const success =
+          !outcome.spawnError &&
+          protocolErrors.length === 0 &&
+          (outcome.exitCode === 0 || (agentAuthoredError && outcome.exitCode !== null));
         if (success) {
           const id = ids[0];
           if (!id) throw new Error("Antigravity success without conversation ID");
@@ -1349,6 +1373,29 @@ function isReadOnlyTool(name: string): boolean {
   return /^(read|read_file|list|list_files|grep|search|search_files|find|find_files|stat|webfetch|websearch)$/i.test(
     name,
   );
+}
+
+/** Runtime classes that must remain terminal. Unknown ERROR bodies can be the agent's report. */
+function isAntigravityRuntimeFailureCategory(category: string): boolean {
+  return (
+    category === "credential" ||
+    category === "capability" ||
+    category === "configuration" ||
+    category === "provider_capacity" ||
+    category === "deterministic_input" ||
+    category === "runtime_transport" ||
+    category === "transient_transport"
+  );
+}
+
+function looksLikeAgentAuthoredReport(text: string): boolean {
+  const body = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !/^antigravity returned (status |an error result)/i.test(line))
+    .join("\n");
+  if (!body) return false;
+  return body.includes("\n") || body.length >= 40;
 }
 
 export type { AntigravityMcpConfig };

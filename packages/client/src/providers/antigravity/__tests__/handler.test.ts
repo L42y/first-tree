@@ -206,6 +206,7 @@ function createControlledSupervisor(
   outputLines: readonly string[],
   outputLinesByTurn: readonly (readonly string[])[] = [],
   closeAfterTurn: readonly boolean[] = [],
+  closeExitCode = 0,
 ): ProviderProcessSupervisor {
   let turn = 0;
   return {
@@ -230,7 +231,7 @@ function createControlledSupervisor(
         closed = true;
         stdout.end();
         stderr.end();
-        queueMicrotask(() => child.emit("close", 0, null));
+        queueMicrotask(() => child.emit("close", closeExitCode, null));
       };
       const child = Object.assign(new EventEmitter(), {
         pid: undefined,
@@ -938,6 +939,56 @@ process.stdin.on("end", () => {
       }),
     ]);
     expect(JSON.stringify(events)).toContain("Individual quota reached");
+    expect(JSON.stringify(events)).not.toContain("malformed Antigravity stream");
+    await handler.shutdown();
+  });
+
+  it("delivers an agent-authored ERROR report as the turn instead of a configuration failure", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-noop-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const report = [
+      "No-op webhook event on PR #3910:",
+      "",
+      "Event: issue_comment created by first-tree-hub-staging[bot].",
+      "Comment: issuecomment-5718353169 (own thread).",
+    ].join("\n");
+    const output = [
+      JSON.stringify({ event: "init", conversation_id: "conversation-noop" }),
+      JSON.stringify({ event: "future_event", note: "noise" }),
+      JSON.stringify({
+        event: "result",
+        result: {
+          conversation_id: "conversation-noop",
+          status: "ERROR",
+          response: "",
+          error: report,
+        },
+      }),
+    ];
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(specs, inputs, output, [], [true], 1),
+      antigravityTurnTimeoutMs: 5_000,
+    });
+    const token = deliveryToken();
+
+    await handler.start(message("m-noop", "handle the webhook"), sessionCtx, token);
+
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(expect.anything(), { status: "success" });
+    expect(forwarded).toEqual([report]);
+    expect(providerRetryEventNames(events)).toEqual([]);
+    expect(JSON.stringify(events)).toContain("No-op webhook event on PR #3910");
+    expect(JSON.stringify(events)).not.toContain("runtime configuration needs attention");
     expect(JSON.stringify(events)).not.toContain("malformed Antigravity stream");
     await handler.shutdown();
   });

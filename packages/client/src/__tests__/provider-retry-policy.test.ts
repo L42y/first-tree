@@ -381,6 +381,12 @@ describe("classifyProviderFailure", () => {
     });
     expect(protocol).toMatchObject({ category: "configuration", reasonCode: "antigravity_protocol_error" });
 
+    const noop = classifyProviderFailure(
+      new Error("No-op webhook event on PR #3910:\n\nEvent: issue_comment created by first-tree-hub-staging[bot]."),
+      { provider: "antigravity", scope: "provider_turn", source: "stream" },
+    );
+    expect(noop.category).toBe("unknown");
+
     const quota = classifyProviderFailure(
       new Error(
         [
