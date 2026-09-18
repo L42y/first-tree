@@ -1,5 +1,5 @@
 import { RUNTIME_STALE_MS, type RuntimeState, type SessionState } from "@first-tree/shared";
-import { and, eq, isNotNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { Database } from "../../../db/connection.js";
 import { agentChatSessions } from "../../../db/schema/agent-chat-sessions.js";
 import { agentPresence } from "../../../db/schema/agent-presence.js";
@@ -43,8 +43,10 @@ export async function upsertSessionState(
     // Short-circuit when the row is already at the target state: skip the
     // updatedAt refresh so steady-state messaging doesn't churn the row.
     // Insertions, lifecycle transitions (evicted → active, active →
-    // suspended, etc.), and one-time repair of a non-idle runtime retained by
-    // an already-inactive row still take the UPDATE branch.
+    // suspended, etc.), one-time repair of a non-idle runtime retained by
+    // an already-inactive row, and a wake that would otherwise inherit a
+    // Failed-causing D-axis (stale in-flight / leftover error / NULL stamp)
+    // still take the UPDATE branch.
     //
     // We use `.returning()` to detect whether INSERT/UPDATE actually fired —
     // PostgreSQL omits returning rows when the ON CONFLICT DO UPDATE's
@@ -59,33 +61,40 @@ export async function upsertSessionState(
     // client's `heartbeat` frame is the canonical lastSeenAt refresh
     // path (see presence.ts:touchAgent), so dropping the lastSeenAt
     // side-effect here is safe.
+    //
+    // Active writes stamp `idle` rather than leaving a prior D-axis in place.
+    // A mention predictively marks the session active before the Client has
+    // reported this turn; inheriting stale `working`/`error` made that wake
+    // read as Failed until the first fresh `working` frame. Fresh working is
+    // still a no-op so a second message into a live turn cannot flash Idle.
+    const idleRuntime = { state, runtimeState: "idle" as const, runtimeStateAt: now, updatedAt: now };
     const rows = await tx
       .insert(agentChatSessions)
-      .values(
-        revokesRuntime
-          ? { agentId, chatId, state, runtimeState: "idle", runtimeStateAt: now, updatedAt: now }
-          : { agentId, chatId, state, updatedAt: now },
-      )
+      .values({ agentId, chatId, ...idleRuntime })
       .onConflictDoUpdate({
         target: [agentChatSessions.agentId, agentChatSessions.chatId],
-        set: revokesRuntime
-          ? { state, runtimeState: "idle", runtimeStateAt: now, updatedAt: now }
-          : { state, updatedAt: now },
-        // An inactive row retaining a non-idle runtime is also a real
-        // projection change even when its lifecycle value is already equal.
-        // Repair it once, then keep duplicate inactive frames as no-ops.
+        set: idleRuntime,
         setWhere: revokesRuntime
           ? or(ne(agentChatSessions.state, state), ne(agentChatSessions.runtimeState, "idle"))
-          : ne(agentChatSessions.state, state),
+          : or(
+              ne(agentChatSessions.state, "active"),
+              inArray(agentChatSessions.runtimeState, ["error", "blocked"]),
+              isNull(agentChatSessions.runtimeStateAt),
+              and(
+                eq(agentChatSessions.runtimeState, "working"),
+                sql`${agentChatSessions.runtimeStateAt} < NOW() - ${sql.raw(String(RUNTIME_STALE_MS))} * interval '1 millisecond'`,
+              ),
+            ),
       })
       .returning({ agentId: agentChatSessions.agentId });
 
     if (rows.length === 0) return;
     projectionChanged = true;
 
-    // Active runtime values are owned by `session:runtime`. Lifecycle
-    // inactivation is the revocation authority and atomically writes idle so
-    // a dropped/reordered client edge cannot leave working behind.
+    // Active runtime values are owned by `session:runtime` once the Client
+    // reports. Lifecycle writes (inactivation, and an active wake that is
+    // not already fresh working) atomically stamp idle so a dropped,
+    // reordered, or stale client edge cannot leave Failed behind.
     const [counts] = await tx
       .select({
         active: sql<number>`count(*) FILTER (WHERE ${agentChatSessions.state} = 'active')::int`,
@@ -119,9 +128,7 @@ export async function upsertSessionState(
 
   if (projectionChanged && notifier) {
     notifier.notifySessionStateChange(agentId, chatId, state, organizationId).catch(() => {});
-    if (revokesRuntime) {
-      notifier.notifySessionRuntime(agentId, chatId, "idle", organizationId).catch(() => {});
-    }
+    notifier.notifySessionRuntime(agentId, chatId, "idle", organizationId).catch(() => {});
   }
 }
 
