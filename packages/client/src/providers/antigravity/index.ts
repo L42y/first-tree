@@ -64,7 +64,6 @@ export function isAntigravityPendingSessionId(sessionId: string): boolean {
 }
 
 const STDERR_TAIL_LIMIT = 8_000;
-const DEFAULT_TURN_TIMEOUT_MS = 20 * 60_000;
 const KILL_GRACE_MS = 5_000;
 const FINAL_CLOSE_WAIT_MS = 2_000;
 const ANTIGRAVITY_CAPACITY_RE = /no capacity available|resource_exhausted|individual quota reached/i;
@@ -261,7 +260,7 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
   const turnTimeoutMs =
     typeof config.antigravityTurnTimeoutMs === "number" && config.antigravityTurnTimeoutMs > 0
       ? config.antigravityTurnTimeoutMs
-      : DEFAULT_TURN_TIMEOUT_MS;
+      : undefined;
   const retrySleep =
     (config.antigravityRetrySleep as AntigravityRetrySleep | undefined) ?? defaultAntigravityRetrySleep;
 
@@ -366,7 +365,7 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
     state: TurnState;
     sessionCtx: SessionContext;
     abortSignal: AbortSignal;
-    timeoutMs: number;
+    timeoutMs?: number;
     turnGeneration: number;
     label: string;
   }): Promise<ProcessOutcome> {
@@ -377,7 +376,7 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
           command: input.command,
           args: input.args,
           label: input.label,
-          timeoutMs: input.timeoutMs,
+          ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
           options: {
             cwd: input.workspaceCwd,
             env: input.env,
@@ -852,8 +851,11 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
         token.processingStarted(messages);
         processingStarted = true;
         providerTurnActive = true;
-        const timeout = setTimeout(() => abort.abort(), turnTimeoutMs);
-        timeout.unref?.();
+        const timeout =
+          typeof turnTimeoutMs === "number" && turnTimeoutMs > 0
+            ? setTimeout(() => abort.abort(), turnTimeoutMs)
+            : null;
+        timeout?.unref?.();
         let outcome: ProcessOutcome;
         try {
           outcome = await runProcess({
@@ -875,7 +877,7 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
             label: `antigravity turn ${sessionCtx.chatId}`,
           });
         } finally {
-          clearTimeout(timeout);
+          if (timeout) clearTimeout(timeout);
           providerTurnActive = false;
         }
 
