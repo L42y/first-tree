@@ -1264,9 +1264,22 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         return false;
       }
       if (abort.signal.aborted || generation !== turnGeneration || !sessionActive) {
-        if (observedState?.sawUnsafeTool || (observedState?.sawProviderActivity && settleProviderEntered)) {
+        const record =
+          takeTurnAbortRecord(turnGeneration) ??
+          inferOpenCodeTurnAbortRecord({
+            turnGeneration,
+            currentGeneration: generation,
+            sessionActive,
+            timedOut: false,
+            abortSignal: abort.signal,
+          });
+        if (record.disposition === "silent") {
+          return false;
+        }
+        const captured = observedState as TurnState | null;
+        if (captured && (captured.sawUnsafeTool || (captured.sawProviderActivity && settleProviderEntered))) {
           return settleLifecycleConsumedTurn({
-            state: observedState,
+            state: captured,
             sessionCtx,
             messages,
             token,
@@ -1279,7 +1292,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       return await settleFailure({
         failure,
         spawnError: error instanceof Error ? error : new Error(String(error)),
-        state: observedState ?? { sawProviderActivity: false, sawUnsafeTool: false, text: [] },
+        state: (observedState as TurnState | null) ?? { sawProviderActivity: false, sawUnsafeTool: false, text: [] },
         sessionCtx,
         messages,
         token,
