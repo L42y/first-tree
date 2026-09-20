@@ -52,12 +52,19 @@ export function inferOpenCodeTurnAbortRecord(input: {
 
 export function describeOpenCodeTurnAbortFailure(input: {
   cause: OpenCodeTurnAbortCause;
-  turnTimeoutMs: number;
+  turnTimeoutMs?: number;
   state: OpenCodeTurnAbortState;
 }): string {
-  const timeoutSeconds = Math.round(input.turnTimeoutMs / 1000);
+  const timeoutSeconds =
+    typeof input.turnTimeoutMs === "number" && input.turnTimeoutMs > 0
+      ? Math.round(input.turnTimeoutMs / 1000)
+      : undefined;
+  const timeoutLead =
+    timeoutSeconds !== undefined
+      ? `OpenCode turn timed out after ${timeoutSeconds}s before a safe terminal event (step_finish)`
+      : "OpenCode turn timed out before a safe terminal event (step_finish)";
   const lead = {
-    timeout: `OpenCode turn timed out after ${timeoutSeconds}s before a safe terminal event (step_finish)`,
+    timeout: timeoutLead,
     superseded: "OpenCode turn was superseded by a newer delivery before a safe terminal event (step_finish)",
     session_inactive:
       "OpenCode turn ended because the session became inactive before a safe terminal event (step_finish)",

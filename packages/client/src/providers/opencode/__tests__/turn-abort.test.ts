@@ -82,6 +82,15 @@ describe("describeOpenCodeTurnAbortFailure", () => {
     );
   });
 
+  it("formats timeout failure lead without duration when turnTimeoutMs is undefined", () => {
+    expect(
+      describeOpenCodeTurnAbortFailure({
+        cause: "timeout",
+        state: { terminalReasons: [], sawProviderActivity: false, text: [] },
+      }),
+    ).toBe("OpenCode turn timed out before a safe terminal event (step_finish). no step_finish event received.");
+  });
+
   it("notes superseded deliveries and partial text", () => {
     expect(
       describeOpenCodeTurnAbortFailure({

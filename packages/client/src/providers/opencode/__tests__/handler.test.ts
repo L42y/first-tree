@@ -2088,4 +2088,104 @@ describe("OpenCode V1 handler", () => {
     expect(specs.map((spec) => spec.args)).toEqual([["--version"]]);
     await handler.shutdown();
   });
+
+  it("settles manager shutdown of an in-flight mutating turn as unsafe_replay without publishing a fake provider failure", async () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-shutdown-mutating-"));
+    roots.push(root);
+    const events: SessionEvent[] = [];
+    const output = [
+      JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: "ses_new",
+        part: {
+          id: "tool-1",
+          tool: "bash",
+          state: { status: "completed", input: { command: "touch effect" }, output: "done" },
+        },
+      }),
+    ].join("\n");
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      agentName: "opencode-test-agent",
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createProtocolSupervisor([], [`${output}\n`], [], true),
+    });
+    const token = deliveryToken();
+    const started = handler.start(message("m-shutdown-mutate", "first"), context(events, []), token);
+    await vi.waitFor(() => expect(events.some((event) => event.kind === "tool_call")).toBe(true), {
+      timeout: 10_000,
+    });
+    await handler.shutdown("manager_shutdown", { settleProviderEntered: true });
+    await started;
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "m-shutdown-mutate" })],
+      expect.objectContaining({ status: "error", completion: "consumed", reason: "unsafe_replay" }),
+    );
+    expect(JSON.stringify(events)).not.toContain("after retrying a transient provider or network failure");
+    expect(events.filter((e) => e.kind === "error")).toEqual([]);
+  }, 15_000);
+
+  it("retries an in-flight turn cleanly when suspended before any mutating tool or provider entry", async () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-suspend-clean-"));
+    roots.push(root);
+    const events: SessionEvent[] = [];
+    const output = [
+      JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: "ses_new",
+        part: {
+          id: "tool-read-1",
+          tool: "read",
+          state: { status: "completed", input: { path: "README.md" }, output: "docs" },
+        },
+      }),
+    ].join("\n");
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      agentName: "opencode-test-agent",
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createProtocolSupervisor([], [`${output}\n`], [], true),
+    });
+    const token = deliveryToken();
+    const started = handler.start(message("m-suspend-clean", "first"), context(events, []), token);
+    await vi.waitFor(() => expect(events.some((event) => event.kind === "tool_call")).toBe(true), {
+      timeout: 10_000,
+    });
+    await handler.suspend("concurrency_preempted");
+    await started;
+    expect(token.retry).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "m-suspend-clean" })],
+      "concurrency_preempted",
+    );
+    expect(token.complete).not.toHaveBeenCalled();
+    expect(events.filter((e) => e.kind === "error")).toEqual([]);
+    await handler.shutdown();
+  }, 15_000);
+
+  it("omits process timeout by default to align with other runtimes", async () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-no-timeout-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      agentName: "opencode-test-agent",
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+    });
+
+    await handler.start(message("m1", "run indefinitely"), context([], []), deliveryToken());
+    const runSpec = specs.find((s) => s.args[0] === "run");
+    expect(runSpec).toBeDefined();
+    expect(runSpec?.timeoutMs).toBeUndefined();
+    await handler.shutdown();
+  });
 });
