@@ -139,4 +139,33 @@ describe("Antigravity stream-json parser", () => {
       ),
     ).toEqual([{ kind: "error", message: "Individual quota reached. Resets in 2h42m27s." }]);
   });
+
+  it("accepts system_message, user_input, and checkpoint step updates without diagnostic errors", () => {
+    expect(
+      parseAntigravityStreamLine(
+        JSON.stringify({
+          event: "step_update",
+          step_update: { conversation_id: "c", step_type: "system_message" },
+        }),
+      ),
+    ).toEqual([{ kind: "init", sessionId: "c" }]);
+
+    expect(
+      parseAntigravityStreamLine(
+        JSON.stringify({
+          event: "step_update",
+          step_update: { conversation_id: "c", step_type: "user_input" },
+        }),
+      ),
+    ).toEqual([{ kind: "init", sessionId: "c" }]);
+
+    expect(
+      parseAntigravityStreamLine(
+        JSON.stringify({
+          event: "step_update",
+          step_update: { conversation_id: "c", step_type: "checkpoint" },
+        }),
+      ),
+    ).toEqual([{ kind: "init", sessionId: "c" }]);
+  });
 });
