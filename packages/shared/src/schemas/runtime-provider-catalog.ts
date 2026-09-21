@@ -13,6 +13,7 @@ export const AMP_INSTALL_COMMAND = "curl -fsSL https://ampcode.com/install.sh | 
 export const CURSOR_INSTALL_COMMAND = "curl https://cursor.com/install -fsS | bash";
 export const GROK_INSTALL_COMMAND = "curl -fsSL https://x.ai/cli/install.sh | bash";
 export const ANTIGRAVITY_INSTALL_COMMAND = "curl -fsSL https://antigravity.google/cli/install.sh | bash";
+export const ZCODE_INSTALL_COMMAND = "curl -fsSL https://zcode.z.ai/install.sh | bash";
 
 /**
  * OpenCode CLI minimum supported version. Catalog npm package and client
@@ -24,38 +25,6 @@ export const OPENCODE_NPM_PACKAGE = `opencode-ai@^${OPENCODE_MINIMUM_VERSION}`;
 
 export const PI_NPM_PACKAGE = "@earendil-works/pi-coding-agent";
 export const KIMI_NPM_PACKAGE = "@moonshot-ai/kimi-code";
-/**
- * Exact official ZCode Desktop runtime contract. First Tree downloads the
- * provider-published Linux artifact, verifies its immutable bytes, extracts the
- * runtime kernel, and launches only that digest-checked file. This deliberately
- * does not use a third-party terminal wrapper.
- */
-export const ZCODE_OFFICIAL_RELEASE = "3.10.2";
-export const ZCODE_OFFICIAL_PACKAGE_VERSION = "3.10.2-6414";
-export const ZCODE_OFFICIAL_PLATFORM = "linux-x64";
-export const ZCODE_OFFICIAL_ARTIFACT_URL =
-  "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/linux-x64/ZCode-3.10.2-linux-x64.deb";
-export const ZCODE_OFFICIAL_ARTIFACT_SHA256 = "b618cfa70c8f7c8a1a6e2950565cc441c298b801bb2389c292eb0d3add6bf0c0";
-export const ZCODE_OFFICIAL_ARTIFACT_BYTES = 146_822_580;
-export const ZCODE_OFFICIAL_RUNTIME_VERSION = "0.16.5";
-export const ZCODE_OFFICIAL_RUNTIME_SHA256 = "3597160465b67da248fa3fb919920ca30d4e093003a4d70cde2a2e33903cbabc";
-export const ZCODE_OFFICIAL_RUNTIME_BYTES = 12_557_830;
-export const ZCODE_MINIMUM_NODE_VERSION = "22.19.0";
-/**
- * Copy-pasteable host recovery step for a Computer that has no live
- * resolution to surface (Computers/setup, or the rare chat-timeline hint
- * before the runtime ever resolved). Points at the First Tree-owned
- * `zcode login` driver (`apps/cli/src/commands/zcode/index.ts`) rather than
- * a raw `node <path> login` invocation: the driver re-resolves the managed
- * runtime the same way a provider turn does — honouring
- * `FIRST_TREE_ZCODE_RUNTIME_CACHE` / `XDG_CACHE_HOME` overrides and
- * launching with the exact `process.execPath` First Tree admitted — so this
- * generic string never has to guess a host's cache root or Node binary. The
- * literal `first-tree` name is the same channel-generic reference form used
- * throughout `docs/cli-reference.md`; live per-Computer surfaces substitute
- * the connected client's actual channel binary name.
- */
-export const ZCODE_OFFICIAL_DEFAULT_LOGIN_COMMAND = "first-tree zcode login";
 /**
  * Remediation package list when a Client/CLI install is missing the bundled
  * DeepSeek Harness closure. The portable First Tree CLI is expected to ship
@@ -77,8 +46,7 @@ export const DEEPSEEK_INSTALL_NPM_PACKAGE = [
 /** Provider-owned install metadata — npm package or official installer script. */
 export type RuntimeProviderInstall =
   | { kind: "npm"; package: string; args: readonly string[] }
-  | { kind: "script"; command: string }
-  | { kind: "managed-official-runtime"; platform: string };
+  | { kind: "script"; command: string };
 
 /**
  * Ordered login steps for chat auth-recovery / host-local surfaces.
@@ -273,8 +241,8 @@ export const RUNTIME_PROVIDER_CATALOG = {
     label: "ZCode",
     displayOrder: 85,
     selectionPriority: null,
-    install: { kind: "managed-official-runtime", platform: ZCODE_OFFICIAL_PLATFORM },
-    loginSteps: [ZCODE_OFFICIAL_DEFAULT_LOGIN_COMMAND],
+    install: { kind: "script", command: ZCODE_INSTALL_COMMAND },
+    loginSteps: ["zcode login"],
     authRecovery: { kind: "host" },
     authOwnerLabel: "Z.AI",
   },
@@ -340,9 +308,6 @@ export function runtimeProviderInstallCommand(provider: RuntimeProvider): string
   if (install.kind === "npm") {
     const args = install.args.length > 0 ? `${install.args.join(" ")} ` : "";
     return `npm install -g ${args}${install.package}`;
-  }
-  if (install.kind === "managed-official-runtime") {
-    return `# First Tree extracts official ZCode ${ZCODE_OFFICIAL_RELEASE} automatically on ${install.platform}`;
   }
   return install.command;
 }

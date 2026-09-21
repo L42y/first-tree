@@ -177,8 +177,6 @@ export {
   stripAnsi,
 } from "./providers/runtime-login.js";
 export { PROVIDER_SKILL_ROOTS } from "./providers/skill-roots.js";
-export type { OfficialZcodeRuntimeResolution } from "./providers/zcode/official-runtime.js";
-export { ensureOfficialZcodeRuntime } from "./providers/zcode/official-runtime.js";
 export { readCanonicalContextTreeWriteRouting } from "./runtime/agent-briefing.js";
 // Runtime
 export type { AgentSlotConfig } from "./runtime/agent-slot.js";

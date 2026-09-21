@@ -1,68 +1,81 @@
-import { describe, expect, it } from "vitest";
-import { buildZcodeTurnArgs, inspectZcodeVersion, resolveZcodeRuntimeBinary } from "../binary.js";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  buildZcodeTurnArgs,
+  findZcodeExecutableOnPath,
+  formatZcodeBinaryMissingMessage,
+  isZcodeBinaryMissingError,
+  resolveZcodeRuntimeBinary,
+  ZCODE_INSTALL_COMMAND,
+  ZCODE_LOGIN_COMMAND,
+} from "../binary.js";
 
-const managedRuntime = {
-  ok: true as const,
-  command: "/node",
-  args: ["/managed/zcode.cjs"],
-  runtimePath: "/managed/zcode.cjs",
-};
+const roots: string[] = [];
 
-const ensureRuntime = async () => managedRuntime;
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
-describe("inspectZcodeVersion", () => {
-  it("accepts only the official runtime's exact single-line pin", () => {
-    expect(inspectZcodeVersion("0.16.5\n")).toEqual({ ok: true, runtimeVersion: "0.16.5" });
+describe("findZcodeExecutableOnPath", () => {
+  it("finds the operator-installed binary on PATH without launching it", () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-zcode-bin-"));
+    roots.push(root);
+    const binary = join(root, "zcode");
+    writeFileSync(binary, "#!/bin/sh\nexit 0\n");
+    chmodSync(binary, 0o755);
+
+    expect(
+      findZcodeExecutableOnPath(
+        { PATH: root },
+        { platform: "linux", wellKnownDirs: () => [], loginShellPathDirs: () => [] },
+      ),
+    ).toBe(binary);
   });
 
-  it("rejects wrapper-style, malformed, and incompatible version output", () => {
-    for (const output of ["", "0.16.5\nextra", "zcode 0.16.4"]) {
-      const result = inspectZcodeVersion(output);
-      expect(result.ok).toBe(false);
-      if (!result.ok) expect(result.error).toContain("expected exactly 0.16.5");
-    }
+  it("finds ~/.local/bin and ~/.zcode/bin when PATH is empty", () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-zcode-home-"));
+    roots.push(root);
+    const binary = join(root, ".zcode", "bin", "zcode");
+    mkdirSync(join(root, ".zcode", "bin"), { recursive: true });
+    writeFileSync(binary, "#!/bin/sh\nexit 0\n");
+    chmodSync(binary, 0o755);
+
+    expect(
+      findZcodeExecutableOnPath(
+        { HOME: root, PATH: "" },
+        { platform: "linux", wellKnownDirs: () => [], loginShellPathDirs: () => [] },
+      ),
+    ).toBe(binary);
   });
 });
 
 describe("resolveZcodeRuntimeBinary", () => {
-  it("returns the exact managed command and runtime argv after Node admission", async () => {
-    await expect(
-      resolveZcodeRuntimeBinary(process.env, {
-        ensureRuntime,
-        readVersion: async (command, args) => {
-          expect([command, ...args, "--version"]).toEqual(["/node", "/managed/zcode.cjs", "--version"]);
-          return "0.16.5";
-        },
-        nodeVersion: () => "22.19.0",
-      }),
-    ).resolves.toEqual(managedRuntime);
+  it("resolves without launching", () => {
+    expect(resolveZcodeRuntimeBinary({}, { findOnPath: () => "/opt/bin/zcode" })).toEqual({
+      ok: true,
+      binary: "/opt/bin/zcode",
+    });
   });
 
-  it("fails closed below the supported Node floor before invoking the runtime", async () => {
-    let readCalls = 0;
-    const result = await resolveZcodeRuntimeBinary(process.env, {
-      ensureRuntime,
-      readVersion: async () => {
-        readCalls += 1;
-        return "0.16.5";
-      },
-      nodeVersion: () => "22.18.9",
-    });
-    expect(result).toMatchObject({
-      ok: false,
-      transient: false,
-      error: expect.stringContaining("Node.js 22.19.0+"),
-    });
-    expect(readCalls).toBe(0);
-  });
-
-  it("fails closed when the official runtime answers with the wrong version", async () => {
-    const result = await resolveZcodeRuntimeBinary(process.env, {
-      ensureRuntime,
-      readVersion: async () => "0.16.4",
-      nodeVersion: () => "22.19.0",
-    });
+  it("reports a missing binary with the official installer and host login", () => {
+    const result = resolveZcodeRuntimeBinary({}, { findOnPath: () => null });
     expect(result).toMatchObject({ ok: false, transient: false });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("unreachable");
+    expect(result.error).toContain(ZCODE_INSTALL_COMMAND);
+    expect(result.error).toContain(ZCODE_LOGIN_COMMAND);
+    expect(formatZcodeBinaryMissingMessage("no zcode binary")).toContain("First Tree does not bundle or install ZCode");
+  });
+});
+
+describe("isZcodeBinaryMissingError", () => {
+  it("identifies missing binary error phrases", () => {
+    expect(isZcodeBinaryMissingError("zcode cli is missing on this machine")).toBe(true);
+    expect(isZcodeBinaryMissingError("no zcode binary resolved")).toBe(true);
+    expect(isZcodeBinaryMissingError("zcode: command not found")).toBe(true);
+    expect(isZcodeBinaryMissingError("something unrelated")).toBe(false);
   });
 });
 
@@ -101,10 +114,10 @@ describe("buildZcodeTurnArgs", () => {
     expect(() =>
       buildZcodeTurnArgs({
         workspace: "/tmp/agent-workspace",
-        prompt: " ",
+        prompt: "   \n\t ",
         mode: "build",
         resumeSessionId: null,
       }),
-    ).toThrow("ZCode turn prompt is empty");
+    ).toThrow(/empty/i);
   });
 });

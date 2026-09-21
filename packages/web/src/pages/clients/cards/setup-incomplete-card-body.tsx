@@ -63,7 +63,6 @@ export function SetupIncompleteCardBody({ client, boundAgents, agentName }: Setu
               entry={client.capabilities[provider] ?? null}
               os={client.os}
               hostname={hostname}
-              binName={client.binName}
               showInstallBox
             />
           ))}

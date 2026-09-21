@@ -1,110 +1,133 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { accessSync, constants, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { runtimeProviderLoginCommand, ZCODE_INSTALL_COMMAND } from "@first-tree/shared";
 import {
-  ZCODE_MINIMUM_NODE_VERSION,
-  ZCODE_OFFICIAL_PLATFORM,
-  ZCODE_OFFICIAL_RUNTIME_VERSION,
-} from "@first-tree/shared";
-import { ensureOfficialZcodeRuntime, type OfficialZcodeRuntimeResolution } from "./official-runtime.js";
+  automaticCandidateAllowed,
+  getLoginShellPathDirs,
+  wellKnownBinDirs,
+} from "../../runtime/provider-support/index.js";
 
-export { ZCODE_MINIMUM_NODE_VERSION, ZCODE_OFFICIAL_PLATFORM, ZCODE_OFFICIAL_RUNTIME_VERSION };
+export { ZCODE_INSTALL_COMMAND };
+export const ZCODE_LOGIN_COMMAND = runtimeProviderLoginCommand("zcode");
 
-const execFileAsync = promisify(execFile);
-
-export type ZcodeRuntimeBinaryResolution = OfficialZcodeRuntimeResolution;
-
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function missingRuntimeError(input: unknown): Extract<OfficialZcodeRuntimeResolution, { ok: false }> {
-  const original = describeError(input).trim();
+export function formatZcodeBinaryMissingMessage(input: unknown): string {
+  const original = errorText(input).trim();
   const suffix = original ? ` Original error: ${original}` : "";
-  return {
-    ok: false,
-    transient: false,
-    error: `ZCode official runtime is not ready. First Tree extracts and verifies it automatically on ${ZCODE_OFFICIAL_PLATFORM}.${suffix}`,
-  };
+  return (
+    "ZCode CLI is missing on this machine. " +
+    "First Tree does not bundle or install ZCode and never reads its credential store. " +
+    `Install it with \`${ZCODE_INSTALL_COMMAND}\`, then complete provider-owned setup with ` +
+    `\`${ZCODE_LOGIN_COMMAND}\` and retry.` +
+    suffix
+  );
 }
 
-export type ZcodeVersionInspection =
-  | { ok: true; runtimeVersion: string }
-  | { ok: false; error: string; transient: false };
-
-export function inspectZcodeVersion(output: string): ZcodeVersionInspection {
-  const rows = output
-    .trim()
-    .split(/\r?\n/)
-    .map((row) => row.trim())
-    .filter(Boolean);
-  const version = rows[0];
-  if (rows.length === 1 && version === ZCODE_OFFICIAL_RUNTIME_VERSION) {
-    return { ok: true, runtimeVersion: version };
-  }
-  return {
-    ok: false,
-    transient: false,
-    error: `incompatible ZCode runtime version: expected exactly ${ZCODE_OFFICIAL_RUNTIME_VERSION}`,
-  };
+export function isZcodeBinaryMissingError(input: unknown): boolean {
+  const text = errorText(input);
+  return /zcode cli is missing|zcode.*not (?:found|installed)|no zcode binary/i.test(text);
 }
 
-export type ResolveZcodeRuntimeBinaryDeps = {
-  arch?: string;
-  cacheRoot?: string;
-  ensureRuntime?: typeof ensureOfficialZcodeRuntime;
-  fetchImpl?: typeof fetch;
-  nodeVersion?: () => string;
+export type FindZcodeExecutableDeps = {
+  loginShellPathDirs?: () => string[];
+  wellKnownDirs?: () => string[];
   platform?: NodeJS.Platform;
-  readVersion?: (command: string, args: readonly string[]) => Promise<string>;
-  runTar?: (args: readonly string[], cwd: string) => Promise<void>;
+  pathDelimiter?: string;
 };
 
-async function readZcodeVersion(command: string, args: readonly string[]): Promise<string> {
-  const { stdout } = await execFileAsync(command, [...args, "--version"], {
-    timeout: 10_000,
-    maxBuffer: 64 * 1024,
-    shell: false,
-  });
-  return stdout;
-}
+/** Existence-only resolver shared by capability detection and the handler. */
+export function findZcodeExecutableOnPath(
+  env: Record<string, string | undefined> = process.env,
+  deps: FindZcodeExecutableDeps = {},
+): string | null {
+  const platform = deps.platform ?? process.platform;
+  const pathDelimiter = deps.pathDelimiter ?? (platform === "win32" ? ";" : delimiter);
+  const loginShellPathDirs = deps.loginShellPathDirs ?? getLoginShellPathDirs;
+  const configuredHome = env.HOME || env.USERPROFILE;
+  const home = configuredHome && configuredHome.length > 0 ? configuredHome : homedir();
+  const wellKnownDirs = deps.wellKnownDirs ?? (() => wellKnownBinDirs(home));
+  const seen = new Set<string>();
 
-export async function resolveZcodeRuntimeBinary(
-  _env: NodeJS.ProcessEnv = process.env,
-  deps: ResolveZcodeRuntimeBinaryDeps = {},
-): Promise<OfficialZcodeRuntimeResolution> {
-  const resolution = await (deps.ensureRuntime ?? ensureOfficialZcodeRuntime)({
-    arch: deps.arch,
-    cacheRoot: deps.cacheRoot,
-    fetchImpl: deps.fetchImpl,
-    platform: deps.platform,
-    runTar: deps.runTar,
-  });
-  if (!resolution.ok) return resolution;
-
-  const node = (deps.nodeVersion ?? (() => process.versions.node))();
-  if (compareSemanticVersions(node, ZCODE_MINIMUM_NODE_VERSION) < 0) {
-    return missingRuntimeError(`Node.js ${ZCODE_MINIMUM_NODE_VERSION}+ is required; this host is running ${node}`);
-  }
-
-  try {
-    const inspection = inspectZcodeVersion(
-      await (deps.readVersion ?? readZcodeVersion)(resolution.command, resolution.args),
-    );
-    return inspection.ok ? resolution : missingRuntimeError(inspection.error);
-  } catch (error) {
-    return missingRuntimeError(`the managed runtime did not answer --version: ${describeError(error)}`);
-  }
-}
-
-function compareSemanticVersions(left: string, right: string): number {
-  const parse = (value: string): [number, number, number] => {
-    const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value);
-    if (!match) throw new Error(`invalid semantic version: ${value}`);
-    return [Number(match[1]), Number(match[2]), Number(match[3])];
+  const search = (dirs: readonly string[]): string | null => {
+    for (const dir of dirs) {
+      if (!dir) continue;
+      const base = isAbsolute(dir) ? dir : resolve(dir);
+      if (seen.has(base)) continue;
+      seen.add(base);
+      for (const candidate of zcodeExecutableCandidates(base, platform)) {
+        if (isExecutableFile(candidate, platform)) return candidate;
+      }
+    }
+    return null;
   };
-  const [leftMajor, leftMinor, leftPatch] = parse(left);
-  const [rightMajor, rightMinor, rightPatch] = parse(right);
-  return leftMajor - rightMajor || leftMinor - rightMinor || leftPatch - rightPatch;
+
+  const pathValue = env.PATH ?? env.Path ?? env.path ?? "";
+  const pathDirs = pathValue ? pathValue.split(pathDelimiter) : [];
+  const providerInstallDirs = [
+    join(home, ".local", "bin"),
+    join(home, ".zcode", "bin"),
+    join(home, ".zcode", "runtime", "current", "bin"),
+    ...(platform === "win32"
+      ? [
+          ...(env.LOCALAPPDATA ? [join(env.LOCALAPPDATA, "zcode", "bin")] : []),
+          join(home, "AppData", "Local", "zcode", "bin"),
+        ]
+      : []),
+  ];
+  return search(pathDirs) ?? search(providerInstallDirs) ?? search(wellKnownDirs()) ?? search(loginShellPathDirs());
+}
+
+export type ZcodeRuntimeBinaryResolution =
+  | { ok: true; binary: string }
+  | { ok: false; error: string; transient: false };
+
+export type ZcodeRuntimeResolveDeps = {
+  findOnPath?: (env?: Record<string, string | undefined>) => string | null;
+};
+
+/**
+ * Resolve only. Every ZCode invocation is launched later through the provider
+ * process supervisor so Windows never executes an unadmitted runtime process.
+ */
+export function resolveZcodeRuntimeBinary(
+  env: NodeJS.ProcessEnv = process.env,
+  deps: ZcodeRuntimeResolveDeps = {},
+): ZcodeRuntimeBinaryResolution {
+  const findOnPath = deps.findOnPath ?? findZcodeExecutableOnPath;
+  const binary = findOnPath(env);
+  if (!binary) {
+    return {
+      ok: false,
+      error: formatZcodeBinaryMissingMessage("no zcode binary resolved on this host"),
+      transient: false,
+    };
+  }
+  return { ok: true, binary };
+}
+
+function zcodeExecutableCandidates(base: string, platform: NodeJS.Platform): string[] {
+  return platform === "win32" ? [join(base, "zcode.exe"), join(base, "zcode")] : [join(base, "zcode")];
+}
+
+function isExecutableFile(filePath: string, platform: NodeJS.Platform): boolean {
+  if (!automaticCandidateAllowed(filePath)) return false;
+  try {
+    if (!statSync(filePath).isFile()) return false;
+    accessSync(filePath, platform === "win32" ? constants.F_OK : constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function errorText(input: unknown): string {
+  if (input instanceof Error) return `${input.name} ${input.message}`;
+  if (typeof input === "string") return input;
+  if (input && typeof input === "object" && "message" in input) {
+    const message = (input as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return String(input);
 }
 
 export type ZcodeTurnArgsInput = {

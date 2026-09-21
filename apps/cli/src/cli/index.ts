@@ -28,7 +28,6 @@ import { registerOrgCommands } from "../commands/org/index.js";
 import { registerStatusCommand } from "../commands/status.js";
 import { registerTreeCommands } from "../commands/tree/index.js";
 import { registerUpgradeCommand } from "../commands/upgrade.js";
-import { registerZcodeCommands } from "../commands/zcode/index.js";
 import { channelConfig } from "../core/channel.js";
 import { setJsonMode } from "../core/output.js";
 import { COMMAND_VERSION } from "../core/version.js";
@@ -90,6 +89,5 @@ registerConfigCommands(program);
 registerContextCommands(program);
 
 registerTreeCommands(program);
-registerZcodeCommands(program);
 
 program.parse();

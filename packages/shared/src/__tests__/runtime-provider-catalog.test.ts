@@ -34,6 +34,7 @@ import {
   runtimeProviderPreferredCredentialProse,
   runtimeProviderSchema,
   runtimeProviderShowsHostLoginOnSetup,
+  ZCODE_INSTALL_COMMAND,
 } from "../index.js";
 
 describe("runtime provider identity + catalog completeness", () => {
@@ -127,14 +128,8 @@ describe("runtime provider identity + catalog completeness", () => {
           expect(install).toContain(arg);
         }
       } else {
-        if (entry.install.kind === "script") {
-          expect(install).toBe(entry.install.command);
-        } else {
-          expect(entry.install.kind).toBe("managed-official-runtime");
-          expect(install).toBe(
-            `# First Tree extracts official ZCode 3.10.2 automatically on ${entry.install.platform}`,
-          );
-        }
+        expect(entry.install.kind).toBe("script");
+        expect(install).toBe(entry.install.command);
       }
       if (runtimeProviderShowsHostLoginOnSetup(id)) {
         expect(entry.authRecovery).toEqual({ kind: "host" });
@@ -216,7 +211,8 @@ describe("runtime provider identity + catalog completeness", () => {
     expect(runtimeProviderPreferredCredentialProse("deepseek-harness")).toContain("Mark as sensitive");
     expect(runtimeProviderPreferredCredentialProse("amp")).toBeNull();
     expect(runtimeProviderLoginCommand("amp")).toBe("amp login");
-    expect(runtimeProviderLoginCommand("zcode")).toBe("first-tree zcode login");
+    expect(runtimeProviderInstallCommand("zcode")).toBe(ZCODE_INSTALL_COMMAND);
+    expect(runtimeProviderLoginCommand("zcode")).toBe("zcode login");
     expect(KIMI_NPM_PACKAGE).toBe("@moonshot-ai/kimi-code");
     expect(RUNTIME_PROVIDER_CATALOG["kimi-code"].install).toEqual({
       kind: "npm",

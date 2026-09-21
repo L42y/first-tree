@@ -60,24 +60,12 @@ export function providerInstallCommand(provider: RuntimeProvider): string {
 }
 
 /**
- * ZCode's login step is a First Tree-owned CLI driver (`zcode login`), not a
- * third-party command — so unlike every other provider's static
- * `PROVIDER_LOGIN_COMMAND`, it can (and should) be shown with the exact
- * channel binary name the connected Computer actually has on its PATH
- * (`first-tree` / `first-tree-staging` / `first-tree-dev`) instead of the
- * shared catalog's channel-generic `first-tree` reference form.
- */
-export function zcodeLoginCommand(binName?: string | null): string {
-  return binName ? `${binName} zcode login` : PROVIDER_LOGIN_COMMAND.zcode;
-}
-
-/**
  * One-liner install + login command for an empty Setup-incomplete card.
  * Joined with `\n` so the CommandPanel-style pre block renders both
  * lines. The Setup-incomplete card body wraps this in a per-provider
  * box with a copy button per box.
  */
-export function buildInstallCommand(provider: RuntimeProvider, os?: string | null, binName?: string | null): string {
+export function buildInstallCommand(provider: RuntimeProvider, os?: string | null): string {
   if (provider === "claude-code-tui") {
     // The tmux-driven runtime additionally needs tmux (>= 3.0). tmux is not an
     // npm package, so emit the command for the host's actual package manager
@@ -93,9 +81,6 @@ export function buildInstallCommand(provider: RuntimeProvider, os?: string | nul
     // prose is a comment so the command block remains executable.
     const preferred = runtimeProviderPreferredCredentialProse(provider);
     return runtimeProviderComputerSetupCommand(provider, preferred ? [`# preferred: ${preferred}`] : []);
-  }
-  if (provider === "zcode") {
-    return [runtimeProviderInstallCommand(provider), zcodeLoginCommand(binName)].join("\n");
   }
   return runtimeProviderComputerSetupCommand(provider);
 }
@@ -221,10 +206,7 @@ export function providerInstallHint(
     case "pi":
       return `Run \`${installCmd}\` on this ${device}, then ${loginCue}.`;
     case "zcode":
-      return (
-        `First Tree extracts the digest-pinned official ZCode runtime automatically on Linux x64. ` +
-        `Other host platforms fail closed. After extraction, ${loginCue}.`
-      );
+      return `Run \`${installCmd}\` on this ${device} (official ZCode installer), then complete provider-owned setup with \`${loginCmd}\`.`;
     case "codex":
       // In-product browser-OAuth — computer row stays install-only.
       return `Run \`${installCmd}\` on this ${device}.`;

@@ -43,7 +43,6 @@ import { consumedErrorOutcome } from "../handlers/turn-settlement.js";
 import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";
 import { buildZcodeTurnArgs, resolveZcodeRuntimeBinary, type ZcodeRuntimeBinaryResolution } from "./binary.js";
 import { parseZcodeJsonOutput } from "./json.js";
-import { officialRuntimeLabel, officialRuntimeLoginCommand } from "./official-runtime.js";
 
 export const ZCODE_PENDING_SESSION_PREFIX = "zcode-pending-";
 const DEFAULT_TURN_TIMEOUT_MS = 20 * 60_000;
@@ -137,8 +136,9 @@ export const createZcodeHandler: HandlerFactory = (config) => {
   const contextSource = contextSourceFromHandlerConfig(config);
   const contextTree = preparationCoordinatesFromSource(contextSource);
   const resolveBinary =
-    (config.zcodeBinaryResolver as ((env?: NodeJS.ProcessEnv) => Promise<ZcodeRuntimeBinaryResolution>) | undefined) ??
-    resolveZcodeRuntimeBinary;
+    (config.zcodeBinaryResolver as
+      | ((env?: NodeJS.ProcessEnv) => Promise<ZcodeRuntimeBinaryResolution> | ZcodeRuntimeBinaryResolution)
+      | undefined) ?? resolveZcodeRuntimeBinary;
   const processSupervisor =
     (config.providerProcessSupervisor as ProviderProcessSupervisor | undefined) ??
     createDefaultProviderProcessSupervisor();
@@ -288,10 +288,10 @@ export const createZcodeHandler: HandlerFactory = (config) => {
       let supervised: ReturnType<ProviderProcessSupervisor["spawn"]>;
       try {
         const resolvedBinary = binary;
-        if (!resolvedBinary?.ok) throw new Error("ZCode official runtime is not initialized");
+        if (!resolvedBinary?.ok) throw new Error("ZCode runtime is not initialized");
         supervised = processSupervisor.spawn({
-          command: resolvedBinary.command,
-          args: [...resolvedBinary.args, ...input.args],
+          command: resolvedBinary.binary,
+          args: input.args,
           label: input.label,
           timeoutMs: input.timeoutMs,
           options: {
@@ -479,10 +479,7 @@ export const createZcodeHandler: HandlerFactory = (config) => {
   }): Promise<boolean> {
     const attemptKey = deliveryAttemptKey(input.sessionCtx, input.messages);
     const replaySafety = input.sawProviderActivity ? "pre_visible" : "pre_provider";
-    const zcodeLoginCommand = binary?.ok ? officialRuntimeLoginCommand(binary) : undefined;
-    const displayMessage = isAuthError(input.failure)
-      ? formatAuthHint("zcode", input.failure, { loginCommand: zcodeLoginCommand })
-      : input.failure;
+    const displayMessage = isAuthError(input.failure) ? formatAuthHint("zcode", input.failure) : input.failure;
     const attempt = new ProviderAttempt({
       provider: runtimeProvider,
       scope: "provider_turn",
@@ -720,7 +717,7 @@ export const createZcodeHandler: HandlerFactory = (config) => {
     const resolution = await resolveBinary(process.env);
     if (!resolution.ok) throw new Error(resolution.error);
     binary = resolution;
-    sessionCtx.log(`ZCode official runtime: ${officialRuntimeLabel(resolution.runtimePath)}`);
+    sessionCtx.log(`ZCode binary: ${resolution.binary}`);
     let runtimeConfig = activeConfig;
     if (agentConfigCache) runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
     const payload =

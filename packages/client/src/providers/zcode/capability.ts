@@ -1,11 +1,11 @@
 import type { CapabilityEntry } from "@first-tree/shared";
 import { supportsDefaultProviderProcessSupervision } from "../../runtime/provider-support/index.js";
 import { type DetectOutcome, runDetect } from "../capabilities/detect.js";
-import { type ResolveZcodeRuntimeBinaryDeps, resolveZcodeRuntimeBinary } from "./binary.js";
+import { findZcodeExecutableOnPath, formatZcodeBinaryMissingMessage } from "./binary.js";
 
 export type ZcodeProbeDeps = {
+  findOnPath?: (env?: Record<string, string | undefined>) => string | null;
   env?: NodeJS.ProcessEnv;
-  resolutionDeps?: Omit<ResolveZcodeRuntimeBinaryDeps, "platform">;
   platform?: NodeJS.Platform;
 };
 
@@ -16,7 +16,10 @@ export type ZcodeProbeDeps = {
  */
 export async function probeZcodeCapability(deps: ZcodeProbeDeps = {}): Promise<CapabilityEntry> {
   const env = deps.env ?? process.env;
-  if (!supportsDefaultProviderProcessSupervision(deps.platform ?? process.platform)) {
+  const platform = deps.platform ?? process.platform;
+  const findOnPath = deps.findOnPath ?? findZcodeExecutableOnPath;
+
+  if (!supportsDefaultProviderProcessSupervision(platform)) {
     return {
       state: "error",
       available: false,
@@ -28,13 +31,12 @@ export async function probeZcodeCapability(deps: ZcodeProbeDeps = {}): Promise<C
         "Job Object supervisor is available.",
     };
   }
-  const detected = await runDetect(async (): Promise<DetectOutcome> => {
-    const resolution = await resolveZcodeRuntimeBinary(env, {
-      ...deps.resolutionDeps,
-      platform: deps.platform ?? process.platform,
-    });
-    if (resolution.ok) return { installed: true, runtimeSource: "path", runtimePath: resolution.runtimePath };
-    return { installed: false, error: resolution.error };
+  return runDetect(async (): Promise<DetectOutcome> => {
+    const runtimePath = findOnPath(env);
+    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };
+    return {
+      installed: false,
+      error: formatZcodeBinaryMissingMessage("no zcode binary resolved on this host"),
+    };
   });
-  return detected;
 }
