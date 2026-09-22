@@ -700,18 +700,7 @@ function isConfiguration(text: string, base: Classification, provider: RuntimePr
     return true;
   }
   if (provider === "pi" && (isPiModelConfiguration(text) || isPiMcpConfiguration(text))) return true;
-  if (
-    provider === "antigravity" &&
-    /expected one conversation id|resume conversation mismatch|terminal result event|malformed antigravity stream|antigravity returned an error result/.test(
-      text,
-    )
-  ) {
-    // An ERROR result or extra stream noise must not mask a recoverable
-    // quota/auth failure as a configuration problem.
-    if (isCapacity(text, base, undefined, provider) || isBillingLimit(text)) return false;
-    if (/authentication required|unauthenticated|not logged in/.test(text)) return false;
-    return true;
-  }
+  if (isAntigravityProtocolConfiguration(text, base, provider)) return true;
   // Cursor CLI literal invalid-model / explicit-deny / trust-wall phrasings
   // (captured in Phase 0). Gated to the cursor provider: this classifier is
   // shared and configuration wins over capacity in the classify chain, so an
@@ -722,16 +711,40 @@ function isConfiguration(text: string, base: Classification, provider: RuntimePr
   );
 }
 
+function isAntigravityProtocolConfiguration(text: string, base: Classification, provider: RuntimeProvider): boolean {
+  if (provider !== "antigravity") return false;
+  // A process crash, signal termination, or premature exit where zero results or conversation IDs
+  // were observed is a provider process failure, not a configuration error, unless accompanied
+  // by genuine protocol violations (mismatched conversation IDs or malformed stream diagnostics).
+  if (/expected one (?:terminal result event|conversation id), observed 0\b/i.test(text)) {
+    const stripped = text.replace(/expected one (?:terminal result event|conversation id), observed 0\b/gi, "");
+    if (
+      !/expected one conversation id|resume conversation mismatch|terminal result event|malformed antigravity stream|antigravity returned an error result/i.test(
+        stripped,
+      )
+    ) {
+      return false;
+    }
+  }
+  if (
+    !/expected one conversation id|resume conversation mismatch|terminal result event|malformed antigravity stream|antigravity returned an error result/i.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+  // An ERROR result or extra stream noise must not mask a recoverable
+  // quota/auth failure as a configuration problem.
+  if (isCapacity(text, base, undefined, provider) || isBillingLimit(text)) return false;
+  if (/authentication required|unauthenticated|not logged in/.test(text)) return false;
+  return true;
+}
+
 function configurationReason(text: string, base: Classification, provider: RuntimeProvider): string {
   if (provider === "codex" && isCodexServiceTierConfiguration(text)) return "codex_service_tier_unsupported";
   if (provider === "pi" && isPiModelConfiguration(text)) return "pi_model_configuration_error";
   if (provider === "pi" && isPiMcpConfiguration(text)) return "pi_mcp_unsupported";
-  if (
-    provider === "antigravity" &&
-    /expected one conversation id|resume conversation mismatch|terminal result event|malformed antigravity stream|antigravity returned an error result/.test(
-      text,
-    )
-  ) {
+  if (isAntigravityProtocolConfiguration(text, base, provider)) {
     return "antigravity_protocol_error";
   }
   return base.reasonCode === "unknown" ? "provider_configuration_error" : base.reasonCode;

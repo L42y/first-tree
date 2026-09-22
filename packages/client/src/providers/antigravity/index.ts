@@ -907,7 +907,9 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
           token.retry(messages, lifecycleRecoveryReason);
           return false;
         }
-        const capacityDiagnostic = antigravityCapacityDiagnostic([outcome.stderrTail, ...state.errors].join("\n"));
+        const capacityDiagnostic = antigravityCapacityDiagnostic(
+          [outcome.stderrTail, outcome.stdoutTail, ...state.errors].join("\n"),
+        );
         if (capacityDiagnostic && !state.sawUnsafeTool && state.results.length === 0) {
           // Drop an already-established conversation so the capacity retry
           // cannot spawn `--conversation` for the same 503 cascade. Remember
@@ -1043,11 +1045,19 @@ export const createAntigravityHandler: HandlerFactory = (config) => {
           return true;
         }
 
+        const stdoutDiagnostic =
+          !result && isAntigravityAuthError(outcome.stdoutTail)
+            ? outcome.stdoutTail
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .find((line) => isAntigravityAuthError(line)) ?? outcome.stdoutTail.trim()
+            : undefined;
+
         const rawFailure = [
           ...protocolErrors,
           outcome.spawnError?.message,
           outcome.stderrTail,
-          result ? undefined : outcome.stdoutTail,
+          stdoutDiagnostic,
           outcome.exitCode === null ? `signal ${outcome.signal ?? "unknown"}` : `exit ${outcome.exitCode}`,
         ]
           .filter((value): value is string => Boolean(value?.trim()))

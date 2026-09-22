@@ -1730,4 +1730,60 @@ process.stdin.on("end", () => {
     expect(forwarded).toEqual(["hello"]);
     await handler.shutdown();
   });
+
+  it("does not classify premature process exit or missing result as a configuration error and sanitizes stdout noise", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-premature-exit-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const output = [
+      JSON.stringify({ event: "init", conversation_id: "conversation-crash" }),
+      "ask [options] [name] [message] Ask a HUMAN in the caller's current chat",
+    ];
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(
+        specs,
+        inputs,
+        output,
+        [],
+        [true],
+        1,
+        ["sqlite3: database or disk is full"],
+      ),
+      antigravityTurnTimeoutMs: 5_000,
+    });
+    const token = deliveryToken();
+
+    await handler.start(message("m-crash", "please review"), sessionCtx, token);
+
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: "error", completion: "consumed" }),
+    );
+    expect(JSON.stringify(events)).not.toContain("runtime configuration needs attention");
+    expect(JSON.stringify(events)).not.toContain("Ask a HUMAN");
+    expect(JSON.stringify(events)).toContain("database or disk is full");
+    const retryEvents = events.flatMap((event) => {
+      const { kind, payload } = event as { kind?: unknown; payload?: { message?: unknown } };
+      if (kind !== "error" || typeof payload?.message !== "string") return [];
+      const parsed = parseProviderRetryEventMessage(payload.message);
+      return parsed ? [parsed] : [];
+    });
+    expect(retryEvents).toEqual([
+      expect.objectContaining({
+        category: "unknown",
+        reasonCode: "unsafe_replay",
+      }),
+    ]);
+    await handler.shutdown();
+  });
 });
