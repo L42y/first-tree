@@ -454,41 +454,40 @@ describe("classifyProviderFailure", () => {
 
     const zeroEventsWithStderrCrash = classifyProviderFailure(
       new Error(
-        [
-          "expected one terminal result event, observed 0",
-          "sqlite3: database or disk is full",
-          "exit 1",
-        ].join("\n"),
+        ["expected one terminal result event, observed 0", "sqlite3: database or disk is full", "exit 1"].join("\n"),
       ),
       { provider: "antigravity", scope: "provider_turn", source: "stream" },
     );
     expect(zeroEventsWithStderrCrash.category).toBe("unknown");
     expect(zeroEventsWithStderrCrash.reasonCode).not.toBe("antigravity_protocol_error");
 
-    const duplicateResults = classifyProviderFailure(
-      new Error("expected one terminal result event, observed 2"),
-      { provider: "antigravity", scope: "provider_turn", source: "stream" },
-    );
+    const duplicateResults = classifyProviderFailure(new Error("expected one terminal result event, observed 2"), {
+      provider: "antigravity",
+      scope: "provider_turn",
+      source: "stream",
+    });
     expect(duplicateResults).toMatchObject({ category: "configuration", reasonCode: "antigravity_protocol_error" });
 
     const zeroConversationIdsAndResults = classifyProviderFailure(
       new Error(
-        [
-          "expected one conversation ID, observed 0",
-          "expected one terminal result event, observed 0",
-          "exit 1",
-        ].join("\n"),
+        ["expected one conversation ID, observed 0", "expected one terminal result event, observed 0", "exit 1"].join(
+          "\n",
+        ),
       ),
       { provider: "antigravity", scope: "provider_turn", source: "stream" },
     );
     expect(zeroConversationIdsAndResults.category).toBe("unknown");
     expect(zeroConversationIdsAndResults.reasonCode).not.toBe("antigravity_protocol_error");
 
-    const duplicateConversationIds = classifyProviderFailure(
-      new Error("expected one conversation ID, observed 2"),
-      { provider: "antigravity", scope: "provider_turn", source: "stream" },
-    );
-    expect(duplicateConversationIds).toMatchObject({ category: "configuration", reasonCode: "antigravity_protocol_error" });
+    const duplicateConversationIds = classifyProviderFailure(new Error("expected one conversation ID, observed 2"), {
+      provider: "antigravity",
+      scope: "provider_turn",
+      source: "stream",
+    });
+    expect(duplicateConversationIds).toMatchObject({
+      category: "configuration",
+      reasonCode: "antigravity_protocol_error",
+    });
   });
 
   it("classifies Pi credential phrasings as needs_operator and does not unknown-retry them", () => {

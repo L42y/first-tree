@@ -1749,15 +1749,9 @@ process.stdin.on("end", () => {
       runtimeProvider: "antigravity",
       agentConfigCache: cache(runtimeConfig()),
       antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
-      providerProcessSupervisor: createControlledSupervisor(
-        specs,
-        inputs,
-        output,
-        [],
-        [true],
-        1,
-        ["sqlite3: database or disk is full"],
-      ),
+      providerProcessSupervisor: createControlledSupervisor(specs, inputs, output, [], [true], 1, [
+        "sqlite3: database or disk is full",
+      ]),
       antigravityTurnTimeoutMs: 5_000,
     });
     const token = deliveryToken();
@@ -1772,6 +1766,58 @@ process.stdin.on("end", () => {
     expect(JSON.stringify(events)).not.toContain("runtime configuration needs attention");
     expect(JSON.stringify(events)).not.toContain("Ask a HUMAN");
     expect(JSON.stringify(events)).toContain("database or disk is full");
+    const retryEvents = events.flatMap((event) => {
+      const { kind, payload } = event as { kind?: unknown; payload?: { message?: unknown } };
+      if (kind !== "error" || typeof payload?.message !== "string") return [];
+      const parsed = parseProviderRetryEventMessage(payload.message);
+      return parsed ? [parsed] : [];
+    });
+    expect(retryEvents).toEqual([
+      expect.objectContaining({
+        category: "unknown",
+        reasonCode: "unsafe_replay",
+      }),
+    ]);
+    await handler.shutdown();
+  });
+
+  it("preserves replay custody when stream payload content mentions capacity phrases and terminates without result", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-antigravity-quoted-capacity-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const inputs: string[] = [];
+    const events: unknown[] = [];
+    const forwarded: string[] = [];
+    const sessionCtx = context(events, forwarded);
+    const output = [
+      JSON.stringify({ event: "init", conversation_id: "conversation-quoted-cap" }),
+      JSON.stringify({
+        event: "step_update",
+        step_update: {
+          conversation_id: "conversation-quoted-cap",
+          step_type: "agent_response",
+          text_delta: "The API responded with: resource_exhausted or individual quota reached.",
+        },
+      }),
+    ];
+    const handler = createAntigravityHandler({
+      workspaceRoot: root,
+      agentName: "antigravity-test-agent",
+      runtimeProvider: "antigravity",
+      agentConfigCache: cache(runtimeConfig()),
+      antigravityBinaryResolver: () => ({ ok: true, binary: process.execPath }),
+      providerProcessSupervisor: createControlledSupervisor(specs, inputs, output, [], [true], 1),
+      antigravityTurnTimeoutMs: 5_000,
+    });
+    const token = deliveryToken();
+
+    await handler.start(message("m-quoted", "please assist"), sessionCtx, token);
+
+    expect(token.retry).not.toHaveBeenCalled();
+    expect(token.complete).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: "error", completion: "consumed" }),
+    );
     const retryEvents = events.flatMap((event) => {
       const { kind, payload } = event as { kind?: unknown; payload?: { message?: unknown } };
       if (kind !== "error" || typeof payload?.message !== "string") return [];
